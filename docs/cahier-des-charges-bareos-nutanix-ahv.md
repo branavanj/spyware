@@ -622,8 +622,11 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
 14. Secure Snap : **non activé** (vérifié). Question close.
 15. Version de Prism Central : **pc.7.5.0.6** (fournie). Elle satisfait tous les
     minimums relevés (conteneurs de stockage : PC 7.3).
-16. Version d'AOS de **chacun** des deux clusters rattachés à ce Prism Central : le
-    calcul des régions modifiées exige AOS 7.0 au minimum.
+16. Version d'AOS des deux clusters : **7.5.0.6, licence PRO** (fournie). Le minimum
+    AOS 7.0 pour les régions modifiées est satisfait ; tous les prérequis de version
+    sont donc levés. Reste à confirmer en recette qu'aucune fonction utilisée
+    (points de récupération à la demande, Volume Groups) n'est restreinte par le
+    niveau de licence PRO [?].
 17. Les deux clusters hébergent-ils tous deux des VM à sauvegarder ?
 12. Pour le lot B : serveur ou proxy Zabbix joignable depuis le Director, chiffrement
     des trappers (aucun, PSK ou certificat), et nom de l'hôte Zabbix qui représente le
