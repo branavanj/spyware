@@ -524,6 +524,7 @@ Livrables : note de conception confirmant ou amendant D1 à D9 ; levée de chaqu
 lecture par VG attaché ; trois scripts jetables prouvant le chemin complet (point →
 VG → lecture ; régions modifiées entre deux points ; écriture → nouvelle VM qui démarre).
 *Critère de sortie : aucun [?] bloquant restant.*
+Le script d'essai est fourni : `tools/etape0/ahv_etape0.py` (notice dans le même dossier).
 
 **Étape 1 — Sauvegarde Full.** Client Prism, format `.ahvs`, dumper, `vm.json`,
 nettoyage complet (§ 8), journalisation.
