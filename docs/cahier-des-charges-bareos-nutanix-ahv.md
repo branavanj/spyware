@@ -18,6 +18,7 @@ Il couvre deux lots indépendants :
 |---|---|
 | [B] | Vérifié dans le code source `bareos/bareos` (master, novembre 2026). |
 | [N] | Lu dans les SDK Python officiels Nutanix v4 (générés depuis les spécifications OpenAPI). |
+| [S] | Lu dans les spécifications OpenAPI fournies par le client (Prism v4.4, Monitoring v4.3). |
 | [?] | Non vérifié (documentation Nutanix inaccessible lors de l'étude, ou source indirecte). **À confirmer sur le cluster de recette avant de coder dessus.** |
 
 ---
@@ -130,6 +131,25 @@ Ces constats corrigent la v1 et orientent la conception.
    confirmée [?] ; d'autres éditeurs exigent un rôle administrateur [?]. La liste
    minimale de permissions est un **livrable de l'étape 0**, établie par essais sur la
    recette.
+
+8. **Apports des spécifications OpenAPI fournies** (Prism v4.4) [S] :
+   - chaque opération y déclare ses **rôles autorisés** (`x-permissions`), sa **limite
+     de débit** par taille de Prism Central (`x-rate-limit`) et sa **version minimale**
+     (`x-supported-versions`). La liste minimale de permissions et le budget de
+     requêtes se construisent donc par lecture des spécifications, puis se confirment
+     en recette ;
+   - un rôle intégré **« Backup Admin »** existe : il est autorisé à lire les tâches.
+     Reste à vérifier, dans les spécifications Data Protection, Volumes et VMM, qu'il
+     couvre toutes les opérations du plugin ;
+   - limites relevées : lecture d'une tâche 27 à 72 requêtes/s selon la taille de PC,
+     mais **liste des tâches 6 requêtes/s** et liste des catégories 20 requêtes/s.
+     → Le suivi se fait par lecture unitaire de la tâche attendue, jamais par listage ;
+     l'intervalle de sondage croît progressivement ;
+   - une modification sans `If-Match` est rejetée en HTTP 428 ;
+   - états de tâche : `QUEUED`, `RUNNING`, `CANCELING`, `SUCCEEDED`, `FAILED`,
+     `CANCELED`, `SUSPENDED` ; toute autre valeur est traitée comme un échec ;
+   - l'API de tâches et de catégories existe depuis PC 2024.3.
+   Spécifications encore attendues : § 16, point 13.
 
 ## 5. Décisions de conception
 
@@ -467,6 +487,10 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
 9. NGT est-il installé dans les VM (pour la cohérence applicative) ?
 10. Des Protection Domains ou politiques de protection existent-ils déjà sur ces VM ?
 11. Chiffrement des sauvegardes exigé ou non.
+13. Spécifications OpenAPI Nutanix, dans la version réellement installée :
+    **Data Protection**, **Volumes**, **VMM** (indispensables), **Cluster Management**
+    et **Networking** (conteneurs de stockage, sous-réseaux), **IAM** (comptes de
+    service, clés d'API, rôles). Prism et Monitoring sont déjà fournies.
 12. Pour le lot B : serveur ou proxy Zabbix joignable depuis le Director, chiffrement
     des trappers (aucun, PSK ou certificat), et nom de l'hôte Zabbix qui représente le
     Director. Version de Zabbix : **7.4.8** (fournie).
