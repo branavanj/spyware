@@ -627,6 +627,12 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
     sont donc levés. Reste à confirmer en recette qu'aucune fonction utilisée
     (points de récupération à la demande, Volume Groups) n'est restreinte par le
     niveau de licence PRO [?].
+    Prism Central est en licence **Starter**. Même réserve, et premier point à lever
+    à l'étape 0 : création et suppression d'un point de récupération par l'API,
+    création d'un Volume Group temporaire, création d'un rôle personnalisé [?].
+    Si le rôle personnalisé n'est pas permis par la licence, repli sur le rôle
+    intégré « Backup Admin » et sélection des VM par nom ou par identifiant de
+    catégorie (§ 4.1).
 17. Les deux clusters hébergent-ils tous deux des VM à sauvegarder ?
 12. Pour le lot B : serveur ou proxy Zabbix joignable depuis le Director, chiffrement
     des trappers (aucun, PSK ou certificat), et nom de l'hôte Zabbix qui représente le
