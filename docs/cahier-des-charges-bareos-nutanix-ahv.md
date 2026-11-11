@@ -156,6 +156,30 @@ Ces constats corrigent la v1 et orientent la conception.
      la spécification VMM le confirmera.
    Spécifications encore attendues : § 16, point 13.
 
+### 4.0 Versions d'API réellement servies (mesuré sur l'installation)
+
+Test effectué sur le Prism Central du client (pc.7.5.0.6) : pour `dataprotection`,
+`volumes`, `vmm`, `clustermgmt`, `networking` et `prism`, les versions **v4.0, v4.1
+et v4.2 répondent ; v4.3 et v4.4 n'existent pas** (404). Pour `security`, v4.0 et
+v4.1 existent, v4.2 non.
+
+Conséquences :
+
+- Les spécifications fournies (v4.3/v4.4) sont **plus récentes que l'installation**.
+  Tout ce qui est marqué [S] ci-dessous reste une bonne indication, mais les rôles,
+  limites de débit et tailles maximales peuvent différer en v4.2 : à confirmer en
+  recette, ou par relecture des spécifications v4.2 si le client les fournit.
+- **Règle de versions du plugin** : appeler la version la plus basse qui offre la
+  fonction voulue. Soit **v4.0 partout**, sauf **VMM en v4.1** pour le clonage d'un
+  disque de Volume Group vers un disque de VM (`VolumeDiskReference`, apparu en v4.1).
+  Le plugin reste ainsi compatible avec les installations plus anciennes comme plus
+  récentes, ce qui compte pour le reversement à la communauté.
+- **Contrôle au démarrage** : le plugin vérifie que chaque version d'API qu'il utilise
+  répond, et échoue sinon avec un message nommant l'API et la version manquantes.
+  Les versions sont centralisées dans un seul endroit du code.
+- Le chemin technique complet (points de récupération, régions modifiées, Volume
+  Groups, clonage vers une VM) est donc disponible sur l'installation.
+
 ### 4.1 Faits confirmés par les spécifications Data Protection, Volumes, VMM et IAM [S]
 
 **Le chemin technique complet existe dans les versions installées.**
@@ -238,8 +262,10 @@ La liste finale est confirmée en recette.
   fonction (« Secure Snap ») à des **politiques d'approbation associées à des
   politiques de protection** [S] : un point créé à la demande par le plugin ne devrait
   donc pas être concerné, sauf si les VM sont aussi couvertes par une politique
-  sécurisée. À vérifier en recette ; le plugin contrôle ce champ après création et
-  échoue avec un message explicite s'il vaut vrai.
+  sécurisée. **Vérifié sur l'installation : la fonction n'est pas activée** (l'API
+  répond « policy engine is not enabled »). Le plugin contrôle tout de même ce champ
+  après création et échoue avec un message explicite s'il vaut vrai, pour le jour où
+  elle le serait.
 - VMM accepte aussi un disque de VM cloné **directement depuis un point de disque**
   (`VmDiskRecoveryPointReference`). Hors périmètre de la v1, mais cela ouvre une
   restauration quasi instantanée depuis la base conservée sur le cluster, sans passer
@@ -593,8 +619,7 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
 11. Chiffrement des sauvegardes exigé ou non.
 13. Spécifications OpenAPI Nutanix : toutes celles nécessaires sont fournies (Prism,
     Data Protection, Volumes, VMM, IAM, Cluster Management, Networking, Security).
-14. Des politiques d'approbation « Secure Snap » sont-elles en place sur des
-    politiques de protection couvrant les VM à sauvegarder ?
+14. Secure Snap : **non activé** (vérifié). Question close.
 15. Version de Prism Central : **pc.7.5.0.6** (fournie). Elle satisfait tous les
     minimums relevés (conteneurs de stockage : PC 7.3).
 16. Version d'AOS de **chacun** des deux clusters rattachés à ce Prism Central : le
