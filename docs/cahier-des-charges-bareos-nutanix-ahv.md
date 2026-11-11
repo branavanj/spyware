@@ -18,7 +18,7 @@ Il couvre deux lots indépendants :
 |---|---|
 | [B] | Vérifié dans le code source `bareos/bareos` (master, novembre 2026). |
 | [N] | Lu dans les SDK Python officiels Nutanix v4 (générés depuis les spécifications OpenAPI). |
-| [S] | Lu dans les spécifications OpenAPI fournies par le client (Prism v4.4, Monitoring v4.3). |
+| [S] | Lu dans les spécifications OpenAPI fournies par le client (Prism v4.4, Data Protection v4.4, Volumes v4.3, VMM v4.3, IAM v4.1.b3, Monitoring v4.3). |
 | [?] | Non vérifié (documentation Nutanix inaccessible lors de l'étude, ou source indirecte). **À confirmer sur le cluster de recette avant de coder dessus.** |
 
 ---
@@ -155,6 +155,71 @@ Ces constats corrigent la v1 et orientent la conception.
      clonage d'un disque de Volume Group (vmm ≥ 4.1) est très probablement disponible ;
      la spécification VMM le confirmera.
    Spécifications encore attendues : § 16, point 13.
+
+### 4.1 Faits confirmés par les spécifications Data Protection, Volumes, VMM et IAM [S]
+
+**Le chemin technique complet existe dans les versions installées.**
+
+| Étape | Opération | Confirmé |
+|---|---|---|
+| Point de récupération | création, lecture, suppression, expiration | oui, 32 entités au plus par point |
+| Régions modifiées | `discover-cluster` puis `compute-changed-regions` | oui ; exige AOS (PE) ≥ 7.0 |
+| Lecture | VG `TEMPORARY`, disque créé depuis `DISK_RECOVERY_POINT`, `attach-vm` | oui |
+| Restauration | disque de VM cloné depuis un disque de VG (`VolumeDiskReference`) | oui en VMM v4.3 : la variante de repli de D6 (vmm v4.0) devient inutile |
+| Authentification | compte de service (`SERVICE_ACCOUNT`) et clé d'API (`API_KEY`) | oui |
+
+**Précisions sur les régions modifiées.**
+
+- Le jeton renvoyé par `discover-cluster` se transmet au second appel dans le cookie
+  de session **`NTNX_IGW_SESSION`**.
+- Une réponse contient **au plus 20 000 régions** : le client doit paginer par fenêtres
+  (`offset`/`length`) et ne jamais supposer qu'une réponse couvre tout le disque.
+- La documentation précise que l'appel sert aussi au Full, car il signale les régions
+  à zéro : cela valide la règle « un Full ne lit que les régions `REGULAR` » (D5).
+- `blockSizeByte` : 32768, 65536, 131072 ou 262144. On retient 262144 par défaut
+  (moins de régions, moins d'appels), paramétrable.
+- `discover-cluster` est limité à **1 requête par seconde**, quelle que soit la taille
+  de Prism Central : le jeton est obtenu une fois par disque puis réutilisé, jamais
+  redemandé à chaque fenêtre.
+
+**Limites de débit à respecter** (requêtes par seconde, selon la taille de PC) :
+création de point 2 à 3, suppression de point 2, `set-expiration-time` 5, lecture de
+point 10, opérations de VG 15 à 25, liste des VM 2 à 7, lecture d'une VM 10 à 25,
+création de VM 5 à 20. La liste des VM étant la plus contrainte, la découverte se
+fait **une fois par job**, en filtrant côté serveur.
+
+**Droits : le rôle intégré « Backup Admin » couvre presque tout.** Il autorise :
+créer, lire, supprimer et faire expirer les points de récupération, `discover-cluster`
+et le calcul des régions modifiées ; créer et supprimer un VG, y créer un disque, lire
+un VG et un disque donné, attacher et détacher le VG d'une VM ; lire, lister, créer,
+modifier, éteindre et supprimer des VM, leurs disques et leurs cartes réseau ; lire
+l'état de NGT ; lire une tâche.
+
+Il **n'autorise pas** :
+
+| Opération manquante | Conséquence | Parade |
+|---|---|---|
+| Lire les catégories (`View Category`) | Sélection par nom de catégorie impossible avec ce seul rôle | Rôle personnalisé = Backup Admin + `View Category` (recommandé), ou catégorie désignée par son identifiant |
+| Lister les disques d'un VG et ses attachements | — | Le plugin mémorise les identifiants qu'il crée et lit chaque objet individuellement ; le balayage de nettoyage liste les VG (autorisé) par préfixe de nom |
+| Associer des catégories à une VM | `restore_categories=yes` indisponible | Ajouter `Associate Virtual Machine Categories` au rôle si l'option est voulue |
+| Lire les métadonnées VSS | Sans objet (Windows hors périmètre) | — |
+| Créer la clé d'API | — | Clé créée une fois par un administrateur, hors du plugin |
+
+Les droits sur les conteneurs de stockage et les sous-réseaux restent à lire dans les
+spécifications Cluster Management et Networking. La liste finale est confirmée en recette.
+
+**Points de vigilance nouveaux.**
+
+- Un point de récupération peut être « sécurisé » (`isSecure`) : sa suppression
+  manuelle exige alors une approbation. Si cette fonction est active sur le cluster,
+  le nettoyage automatique est bloqué. À vérifier en recette ; le plugin contrôle ce
+  champ après création et échoue avec un message explicite s'il vaut vrai.
+- VMM accepte aussi un disque de VM cloné **directement depuis un point de disque**
+  (`VmDiskRecoveryPointReference`). Hors périmètre de la v1, mais cela ouvre une
+  restauration quasi instantanée depuis la base conservée sur le cluster, sans passer
+  par Bareos, pour un incident survenu depuis la dernière sauvegarde.
+- Les spécifications fournies pour Storage (v4.0.a3) sont une version alpha sans
+  indication de rôles ni de limites : on ne s'appuie pas dessus.
 
 ## 5. Décisions de conception
 
@@ -465,7 +530,7 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
 |---|---|
 | Cluster sous le plancher AOS 7.0 / pc.2024.3 | Décision avant l'étape 1 ; interface `PrismClient` pour isoler un éventuel backend v3 |
 | Régions modifiées peu fiables selon les versions | Fenêtres bornées, validation, repli, critère n° 2 rejoué après chaque montée de version AOS |
-| Permissions minimales insuffisantes pour le CBT ou les VG | Étape 0 ; à défaut, rôle plus large, documenté et accepté |
+| Rôle « Backup Admin » incomplet (catégories) | Rôle personnalisé dérivé, voir § 4.1 ; confirmation en recette |
 | Débit par VG attaché insuffisant | Mesure à l'étape 0 ; plusieurs proxys ; transport iSCSI en repli |
 | Limitation de débit de Prism Central | Cadence bornée côté client, mise en cache des lectures, étalement des lots |
 | Deux points par VM consomment du stockage | Suivi par `totalExclusiveUsageBytes` [N], option `prune=eager` |
@@ -492,10 +557,11 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
 9. NGT est-il installé dans les VM (pour la cohérence applicative) ?
 10. Des Protection Domains ou politiques de protection existent-ils déjà sur ces VM ?
 11. Chiffrement des sauvegardes exigé ou non.
-13. Spécifications OpenAPI Nutanix, dans la version réellement installée :
-    **Data Protection**, **Volumes**, **VMM** (indispensables), **Cluster Management**
-    et **Networking** (conteneurs de stockage, sous-réseaux), **IAM** (comptes de
-    service, clés d'API, rôles). Prism et Monitoring sont déjà fournies.
+13. Spécifications OpenAPI Nutanix encore utiles : **Cluster Management** (conteneurs
+    de stockage, capacité, identité du cluster) et **Networking** (sous-réseaux).
+    Déjà fournies : Prism, Data Protection, Volumes, VMM, IAM, Monitoring.
+14. La fonction de points de récupération « sécurisés » (suppression soumise à
+    approbation) est-elle activée sur le cluster ?
 12. Pour le lot B : serveur ou proxy Zabbix joignable depuis le Director, chiffrement
     des trappers (aucun, PSK ou certificat), et nom de l'hôte Zabbix qui représente le
     Director. Version de Zabbix : **7.4.8** (fournie).
