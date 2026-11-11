@@ -18,7 +18,7 @@ Il couvre deux lots indépendants :
 |---|---|
 | [B] | Vérifié dans le code source `bareos/bareos` (master, novembre 2026). |
 | [N] | Lu dans les SDK Python officiels Nutanix v4 (générés depuis les spécifications OpenAPI). |
-| [S] | Lu dans les spécifications OpenAPI fournies par le client (Prism v4.4, Data Protection v4.4, Volumes v4.3, VMM v4.3, IAM v4.1.b3, Monitoring v4.3). |
+| [S] | Lu dans les spécifications OpenAPI fournies par le client (Prism v4.4, Data Protection v4.4, Volumes v4.3, VMM v4.3, IAM v4.1.b3, Cluster Management v4.4, Networking v4.4, Security v4.2, Monitoring v4.3). |
 | [?] | Non vérifié (documentation Nutanix inaccessible lors de l'étude, ou source indirecte). **À confirmer sur le cluster de recette avant de coder dessus.** |
 
 ---
@@ -205,15 +205,41 @@ Il **n'autorise pas** :
 | Lire les métadonnées VSS | Sans objet (Windows hors périmètre) | — |
 | Créer la clé d'API | — | Clé créée une fois par un administrateur, hors du plugin |
 
-Les droits sur les conteneurs de stockage et les sous-réseaux restent à lire dans les
-spécifications Cluster Management et Networking. La liste finale est confirmée en recette.
+**Conteneurs, cluster et réseaux** (Cluster Management v4.4, Networking v4.4) [S] :
+
+| Besoin | Backup Admin | Remarque |
+|---|---|---|
+| Lister et lire les conteneurs de stockage | oui | API disponible à partir de **PC 7.3** |
+| Espace libre d'un conteneur (statistiques) | **non** | Voir ci-dessous |
+| Lire un cluster par son identifiant | oui | Identifiant pris dans la VM ou le point de récupération |
+| Lister les clusters | non | Inutile : le plugin n'en a pas besoin |
+| Lister les sous-réseaux | oui | 5 requêtes/s |
+| Lire un sous-réseau par son identifiant | **non** | On passe par la liste filtrée, mise en cache pour le job |
+
+- **Contrôle de capacité avant restauration.** L'espace libre (`storageFreeBytes`) est
+  servi par l'opération de statistiques, hors du rôle. Deux options : ajouter
+  `View Storage Container Stats` au rôle personnalisé (recommandé), ou s'en passer et
+  laisser Prism refuser la création si le conteneur est plein — le plugin nettoie
+  alors et échoue proprement. Le contrôle préalable devient « au mieux » dans ce cas.
+
+**Rôle recommandé : un rôle personnalisé plutôt que « Backup Admin » tel quel.**
+Backup Admin est à la fois trop étroit (catégories, statistiques) et **trop large** :
+il autorise par exemple la modification du cluster et des conteneurs de stockage,
+dont le plugin n'a aucun besoin. Le rôle cible contient uniquement les opérations
+réellement appelées ; sa liste exacte, par opération, est un livrable de l'étape 0.
+En attendant, Backup Admin + `View Category` suffit pour la recette.
+
+La liste finale est confirmée en recette.
 
 **Points de vigilance nouveaux.**
 
 - Un point de récupération peut être « sécurisé » (`isSecure`) : sa suppression
-  manuelle exige alors une approbation. Si cette fonction est active sur le cluster,
-  le nettoyage automatique est bloqué. À vérifier en recette ; le plugin contrôle ce
-  champ après création et échoue avec un message explicite s'il vaut vrai.
+  manuelle exige alors une approbation. La spécification Security v4.2 rattache cette
+  fonction (« Secure Snap ») à des **politiques d'approbation associées à des
+  politiques de protection** [S] : un point créé à la demande par le plugin ne devrait
+  donc pas être concerné, sauf si les VM sont aussi couvertes par une politique
+  sécurisée. À vérifier en recette ; le plugin contrôle ce champ après création et
+  échoue avec un message explicite s'il vaut vrai.
 - VMM accepte aussi un disque de VM cloné **directement depuis un point de disque**
   (`VmDiskRecoveryPointReference`). Hors périmètre de la v1, mais cela ouvre une
   restauration quasi instantanée depuis la base conservée sur le cluster, sans passer
@@ -557,11 +583,12 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
 9. NGT est-il installé dans les VM (pour la cohérence applicative) ?
 10. Des Protection Domains ou politiques de protection existent-ils déjà sur ces VM ?
 11. Chiffrement des sauvegardes exigé ou non.
-13. Spécifications OpenAPI Nutanix encore utiles : **Cluster Management** (conteneurs
-    de stockage, capacité, identité du cluster) et **Networking** (sous-réseaux).
-    Déjà fournies : Prism, Data Protection, Volumes, VMM, IAM, Monitoring.
-14. La fonction de points de récupération « sécurisés » (suppression soumise à
-    approbation) est-elle activée sur le cluster ?
+13. Spécifications OpenAPI Nutanix : toutes celles nécessaires sont fournies (Prism,
+    Data Protection, Volumes, VMM, IAM, Cluster Management, Networking, Security).
+14. Des politiques d'approbation « Secure Snap » sont-elles en place sur des
+    politiques de protection couvrant les VM à sauvegarder ?
+15. Version exacte de Prism Central : l'API des conteneurs de stockage exige PC 7.3
+    au minimum.
 12. Pour le lot B : serveur ou proxy Zabbix joignable depuis le Director, chiffrement
     des trappers (aucun, PSK ou certificat), et nom de l'hôte Zabbix qui représente le
     Director. Version de Zabbix : **7.4.8** (fournie).
