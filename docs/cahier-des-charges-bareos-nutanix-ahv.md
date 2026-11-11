@@ -259,6 +259,14 @@ La liste finale est confirmée en recette.
 | Export par l'API Images puis téléchargement | Simple | Aucun point d'entrée « image depuis un point de disque » [N] ; double copie ; pas d'incrémentale | Écarté |
 | Montage NFS du conteneur | Rapide | Non confirmé comme chemin supporté [?] | Écarté |
 
+**Deux clusters sont rattachés au Prism Central.** L'attachement direct d'un Volume
+Group à une VM impose que la proxy soit sur le même cluster que la VM sauvegardée.
+Il faut donc **une VM proxy par cluster** portant des VM à sauvegarder, chacune avec
+son File Daemon, et des jobs Bareos dirigés vers la proxy du bon cluster. Le plugin
+vérifie au démarrage que chaque VM sélectionnée est sur le cluster de sa proxy et
+refuse les autres avec un message explicite. Une restauration vers l'autre cluster
+passe par la proxy de ce dernier (`vm.json` autoportant, D6).
+
 À valider en recette : identification fiable du périphérique côté proxy. Le plugin ne
 doit **jamais** déduire le périphérique de l'ordre d'apparition (`/dev/sdX`) : il
 attend un lien stable (`/dev/disk/by-id/…` dérivé du numéro de série du disque de VG),
@@ -587,8 +595,11 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
     Data Protection, Volumes, VMM, IAM, Cluster Management, Networking, Security).
 14. Des politiques d'approbation « Secure Snap » sont-elles en place sur des
     politiques de protection couvrant les VM à sauvegarder ?
-15. Version exacte de Prism Central : l'API des conteneurs de stockage exige PC 7.3
-    au minimum.
+15. Version de Prism Central : **pc.7.5.0.6** (fournie). Elle satisfait tous les
+    minimums relevés (conteneurs de stockage : PC 7.3).
+16. Version d'AOS de **chacun** des deux clusters rattachés à ce Prism Central : le
+    calcul des régions modifiées exige AOS 7.0 au minimum.
+17. Les deux clusters hébergent-ils tous deux des VM à sauvegarder ?
 12. Pour le lot B : serveur ou proxy Zabbix joignable depuis le Director, chiffrement
     des trappers (aucun, PSK ou certificat), et nom de l'hôte Zabbix qui représente le
     Director. Version de Zabbix : **7.4.8** (fournie).
