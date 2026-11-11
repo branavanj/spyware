@@ -4,6 +4,14 @@ Document de départ pour le développement. Il remplace la v1 : même besoin, ma
 choix structurants sont tranchés, les cas limites listés et les critères d'acceptation
 rendus mesurables.
 
+Il couvre deux lots indépendants :
+
+- **Lot A** (§ 1 à 16) : le plugin File Daemon de sauvegarde image des VM AHV ;
+- **Lot B** (§ 17) : un plugin Director qui pousse le résultat de chaque job vers
+  Zabbix. Petit, sans lien technique avec Nutanix, utile à tous les jobs existants.
+  Il est livré **en premier** : il rend testable le critère « un échec remonte dans
+  Zabbix » dès l'étape 1 du lot A.
+
 **Niveau de confiance des faits techniques**
 
 | Marque | Signification |
@@ -345,6 +353,9 @@ Critère central : rien ne reste sur le cluster, quel que soit le mode de fin.
 - Sévérités : `M_FATAL` si rien n'est sauvegardable, `M_ERROR` par VM en échec ou
   nettoyage raté, `M_WARNING` pour repli et éléments non couverts. Vérifier en recette
   la correspondance exacte entre sévérité et statut final du job, puisque Zabbix s'y fie.
+- Le statut des jobs arrive dans Zabbix par le plugin Director du lot B (§ 17). Ce
+  plugin ne voit que des valeurs **par job** ; le détail par VM vient des deux
+  utilitaires ci-dessous, exécutés sur la proxy.
 - Fourni pour Zabbix : `bareos-ahv-cleanup --check` (nombre d'orphelins) et
   `bareos-ahv-coverage` : **liste des VM du cluster qu'aucun job ne sélectionne** et âge
   de la dernière sauvegarde réussie par VM. Avec 120 VM, l'oubli d'une VM est le risque
@@ -353,6 +364,9 @@ Critère central : rien ne reste sur le cluster, quel que soit le mode de fin.
 ## 11. Démarche par étapes
 
 Chaque étape est livrée, testée et validée avant la suivante.
+
+**Préalable — Lot B.** Plugin Director pour Zabbix (§ 17), déployé et validé sur les
+jobs existants avant l'étape 1.
 
 **Étape 0 — Étude et maquettes (pas de code de production).**
 Livrables : note de conception confirmant ou amendant D1 à D9 ; levée de chaque point
@@ -453,3 +467,128 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
 9. NGT est-il installé dans les VM (pour la cohérence applicative) ?
 10. Des Protection Domains ou politiques de protection existent-ils déjà sur ces VM ?
 11. Chiffrement des sauvegardes exigé ou non.
+12. Pour le lot B : version de Zabbix, serveur ou proxy Zabbix joignable depuis le
+    Director, chiffrement des trappers (aucun, PSK ou certificat), et nom de l'hôte
+    Zabbix qui représente le Director.
+
+---
+
+## 17. Lot B : plugin Director pour Zabbix
+
+### 17.1 Objectif
+
+À la fin de chaque job Bareos, envoyer immédiatement à Zabbix son statut et ses
+mesures, sans interroger le catalogue. Sont concernés **tous** les jobs (agents
+fichiers existants, futur plugin AHV, restaurations, copies).
+
+### 17.2 Ce que le code Bareos permet
+
+- Le Director charge des plugins Python (`python3`), configurés par job avec
+  `Dir Plugin Options`, donc factorisable dans un `JobDefs` [B].
+- Événements de job : `bDirEventJobInit`, `bDirEventJobStart`, `bDirEventJobRun`,
+  `bDirEventJobEnd` [B]. La classe de base mesure déjà le temps total et le temps
+  d'exécution [B].
+- Valeurs lisibles à la fin du job [B] : nom, JobId, type, niveau, client, statut
+  global, statuts FD et SD, erreurs job et SD, octets, octets lus, fichiers, débit,
+  pool, stockage, type de média, nombre de volumes, priorité.
+- Le plugin **ne peut pas** lire le journal du job ni agir sur son déroulement : le
+  détail par VM d'un job AHV n'est pas accessible ici (voir § 10).
+- `contrib/dir-plugins` contient des plugins Prometheus, Graphite et Nagios/Icinga,
+  aucun pour Zabbix [B]. Le plugin Nagios utilise une ancienne signature de l'API
+  (paramètre `context`) : on part de la classe de base actuelle, pas de ce code.
+
+### 17.3 Décisions de conception
+
+**Z1. Le plugin ne doit jamais dégrader un job.** Il s'exécute dans le fil du job, au
+sein du Director. Donc : toute exception est interceptée, le code de retour est
+toujours `bRC_OK`, les délais réseau sont courts (3 s par défaut), et un échec d'envoi
+ne produit **aucun message de job** par défaut — un avertissement pourrait faire passer
+un job réussi en « OK avec avertissements » [?]. L'échec d'envoi est supervisé
+autrement (Z3).
+
+**Z2. Transport : `zabbix_sender`.** Le binaire officiel gère le protocole trapper et
+le chiffrement PSK ou certificat ; le module `ssl` de Python 3.9 ne gère pas le PSK.
+Option `transport=native` (protocole trapper écrit en Python, bibliothèque standard
+seule) pour les installations sans chiffrement ou avec certificat. Aucune dépendance
+Python externe.
+
+**Z3. File d'attente locale.** Chaque résultat est d'abord écrit de façon atomique
+dans `/var/lib/bareos/zabbix-spool/`, puis envoyé ; il n'est supprimé qu'après accusé
+de Zabbix. Si Zabbix est injoignable, rien n'est perdu : l'envoi est retenté au job
+suivant et par une minuterie systemd (`bareos-zabbix-flush`). L'horodatage d'origine
+est conservé. La file est bornée (âge et nombre) ; sa profondeur est elle-même un
+élément Zabbix.
+
+**Z4. Les jobs qui ne démarrent pas ne produisent aucun événement.** Un envoi en fin
+de job ne détecte ni un Director arrêté, ni un job désactivé, ni une planification
+oubliée. Le modèle Zabbix livré contient donc, pour chaque job, un déclencheur
+« aucune sauvegarde réussie depuis N heures » (`nodata` sur l'horodatage du dernier
+succès), N étant une macro par job.
+
+**Z5. Découverte automatique des jobs.** Le plugin ne connaît que le job en cours. Un
+petit script `bareos-zabbix-discovery` (minuterie, sur le Director) liste les jobs
+activés et alimente une règle de découverte Zabbix (LLD) : chaque nouveau job Bareos
+obtient ses éléments et déclencheurs sans intervention.
+
+**Z6. Rattachement.** Par défaut, tous les éléments sont portés par l'hôte Zabbix du
+Director, un jeu par job. Option `host_by=client` pour les rattacher à l'hôte Zabbix
+de chaque client, avec une table de correspondance si les noms diffèrent.
+
+### 17.4 Éléments envoyés
+
+Clés de la forme `bareos.job.<mesure>[<nom_du_job>]` :
+
+| Mesure | Contenu |
+|---|---|
+| `status` | Code numérique : 0 succès, 1 succès avec avertissements, 2 erreur, 3 annulé, 4 autre |
+| `status_raw` | Lettre de statut Bareos, pour diagnostic |
+| `last_success` | Horodatage, envoyé seulement en cas de succès (alimente Z4) |
+| `errors`, `sd_errors` | Compteurs d'erreurs |
+| `bytes`, `read_bytes`, `files` | Volumes |
+| `duration`, `wait_time`, `rate` | Durée d'exécution, attente en file, débit |
+| `level`, `type`, `jobid` | Contexte du dernier job |
+| `pool`, `storage`, `volumes` | Destination |
+
+La table lettre → code est établie à l'étape de recette en provoquant chaque cas
+(succès, avertissement, erreur, erreur fatale, annulation) ; toute lettre inconnue
+donne 4 et un déclencheur d'avertissement, jamais un faux succès.
+
+### 17.5 Paramètres
+
+```
+JobDefs {
+  Name = "DefaultJob"
+  Dir Plugin Options = "python3:module_name=bareos-dir-zabbix-sender:config_file=/etc/bareos/zabbix-sender.ini"
+}
+```
+
+Le fichier porte : `zabbix_server`, `zabbix_port`, `zabbix_host`, `transport`,
+`timeout`, `tls_psk_identity`, `tls_psk_file` ou `tls_ca_file`/`tls_cert_file`/
+`tls_key_file`, `host_by`, `job_types` (défaut : tous), `spool_dir`. Aucun secret dans
+`Dir Plugin Options`. Le Director tourne sous l'utilisateur `bareos` : fichiers de
+secrets en mode `600`, propriétaire `bareos`, refus de démarrer l'envoi sinon.
+
+### 17.6 Livrables
+
+- Paquet RPM `bareos-director-plugin-zabbix` (`Requires:
+  bareos-director-python3-plugin, zabbix-sender`), installable depuis Nexus.
+- Modèle Zabbix exporté (règle de découverte, prototypes d'éléments et de
+  déclencheurs, élément de profondeur de file).
+- Scripts `bareos-zabbix-flush` et `bareos-zabbix-discovery` avec leurs minuteries.
+- Documentation française ; tests unitaires avec un faux serveur trapper.
+- Proposition en amont dans `contrib/dir-plugins/zabbix/`.
+
+### 17.7 Critères d'acceptation
+
+1. Un job réussi, un job en erreur et un job annulé apparaissent dans Zabbix avec le
+   bon code en moins de 30 secondes après leur fin.
+2. Zabbix arrêté pendant trois jobs : les jobs se terminent normalement, sans
+   allongement notable ni changement de statut ; les trois résultats arrivent, avec
+   leur horodatage d'origine, après le retour de Zabbix.
+3. Un job désactivé ou jamais planifié déclenche l'alerte « aucune sauvegarde réussie
+   depuis N heures ».
+4. Un job créé dans Bareos apparaît dans Zabbix sans action manuelle.
+5. Une erreur interne du plugin (fichier de configuration absent, binaire manquant)
+   ne modifie le statut d'aucun job et se voit dans Zabbix par la profondeur de file
+   ou l'absence de données.
+6. Aucun secret dans la configuration Bareos affichable (`show jobs`) ni dans les journaux.
