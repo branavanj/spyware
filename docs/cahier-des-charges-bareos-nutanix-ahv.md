@@ -467,9 +467,9 @@ exploitation, procédure de restauration pas à pas, dépannage, limites connues
 9. NGT est-il installé dans les VM (pour la cohérence applicative) ?
 10. Des Protection Domains ou politiques de protection existent-ils déjà sur ces VM ?
 11. Chiffrement des sauvegardes exigé ou non.
-12. Pour le lot B : version de Zabbix, serveur ou proxy Zabbix joignable depuis le
-    Director, chiffrement des trappers (aucun, PSK ou certificat), et nom de l'hôte
-    Zabbix qui représente le Director.
+12. Pour le lot B : serveur ou proxy Zabbix joignable depuis le Director, chiffrement
+    des trappers (aucun, PSK ou certificat), et nom de l'hôte Zabbix qui représente le
+    Director. Version de Zabbix : **7.4.8** (fournie).
 
 ---
 
@@ -497,6 +497,15 @@ fichiers existants, futur plugin AHV, restaurations, copies).
   aucun pour Zabbix [B]. Le plugin Nagios utilise une ancienne signature de l'API
   (paramètre `context`) : on part de la classe de base actuelle, pas de ce code.
 
+**Version cible : Zabbix 7.4.8.** Conséquences :
+
+- le modèle est livré au format d'export YAML de la branche 7.4 et testé sur 7.4.8 ;
+- le paquet `zabbix-sender` doit provenir de la même branche 7.x, mis en miroir sur Nexus ;
+- 7.4 n'est pas une version LTS (la LTS est 7.0) [?] : le modèle et le plugin devront
+  être revalidés lors du passage à la version majeure suivante. Le plugin n'utilise
+  donc que des mécanismes stables d'une version à l'autre (éléments trapper, LLD,
+  fonction `nodata`).
+
 ### 17.3 Décisions de conception
 
 **Z1. Le plugin ne doit jamais dégrader un job.** Il s'exécute dans le fil du job, au
@@ -508,9 +517,14 @@ autrement (Z3).
 
 **Z2. Transport : `zabbix_sender`.** Le binaire officiel gère le protocole trapper et
 le chiffrement PSK ou certificat ; le module `ssl` de Python 3.9 ne gère pas le PSK.
-Option `transport=native` (protocole trapper écrit en Python, bibliothèque standard
-seule) pour les installations sans chiffrement ou avec certificat. Aucune dépendance
-Python externe.
+Deux autres transports en option, sans dépendance Python externe :
+
+- `transport=native` : protocole trapper écrit en Python (bibliothèque standard),
+  pour les installations sans chiffrement ou avec certificat ;
+- `transport=api` : méthode `history.push` de l'API Zabbix, disponible depuis 7.0 [?],
+  en HTTPS avec un jeton d'API. Intéressant si le port trapper (10051) n'est pas
+  ouvert depuis le Director mais que l'interface web l'est ; en contrepartie, un jeton
+  à protéger et à renouveler. À valider sur 7.4.8 avant de le retenir.
 
 **Z3. File d'attente locale.** Chaque résultat est d'abord écrit de façon atomique
 dans `/var/lib/bareos/zabbix-spool/`, puis envoyé ; il n'est supprimé qu'après accusé
