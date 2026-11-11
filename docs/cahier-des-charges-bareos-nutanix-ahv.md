@@ -7,6 +7,8 @@ rendus mesurables.
 Il couvre deux lots indépendants :
 
 - **Lot A** (§ 1 à 16) : le plugin File Daemon de sauvegarde image des VM AHV ;
+- **Lot C** (§ 18) : ReaR (Relax-and-Recover) avec Bareos, sans développement, comme
+  filet de sécurité immédiat et point de comparaison chiffré pour le lot A ;
 - **Lot B** (§ 17) : un plugin Director qui pousse le résultat de chaque job vers
   Zabbix. Petit, sans lien technique avec Nutanix, utile à tous les jobs existants.
   Il est livré **en premier** : il rend testable le critère « un échec remonte dans
@@ -774,3 +776,54 @@ secrets en mode `600`, propriétaire `bareos`, refus de démarrer l'envoi sinon.
    ne modifie le statut d'aucun job et se voit dans Zabbix par la profondeur de file
    ou l'absence de données.
 6. Aucun secret dans la configuration Bareos affichable (`show jobs`) ni dans les journaux.
+
+---
+
+## 18. Lot C : ReaR avec Bareos (sans développement)
+
+### 18.1 Principe
+
+ReaR, installé dans une VM, produit une ISO de secours amorçable décrivant le système
+(partitions, LVM, systèmes de fichiers, chargeur de démarrage) et embarquant le client
+Bareos. Les données restent dans les sauvegardes fichiers existantes. Restauration :
+VM vide démarrée sur l'ISO, `rear recover`, Bareos restaure les fichiers, ReaR
+réinstalle le chargeur de démarrage.
+
+### 18.2 Rôle des deux solutions
+
+| | ReaR (lot C) | Plugin AHV (lot A) |
+|---|---|---|
+| Disponibilité | immédiate | après développement |
+| Dépendance à Nutanix | aucune : restaure aussi ailleurs | forte |
+| Dans la VM | paquet ReaR + agent Bareos | rien |
+| Vitesse de restauration | plus lente (fichier par fichier) | recopie de disques |
+| Usage visé | filet de sécurité général, y compris si le cluster ou le plugin fait défaut | restauration rapide et uniforme |
+
+Les deux reposent sur des mécanismes indépendants : une panne ou un défaut de l'un
+n'affecte pas l'autre.
+
+### 18.3 Démarche
+
+1. **Essai sur une VM Rocky 9** : installation, génération de l'ISO, restauration
+   complète dans une VM vide, **mesure du temps total**. Ce chiffre sert de référence
+   pour juger le gain du plugin (§ 13, critère 9).
+2. Même essai sur CentOS 7 et Ubuntu 16.04, dont les dépôts fournissent d'anciennes
+   versions de ReaR [?].
+3. Si concluant : déploiement par lots (paquet et configuration via Nexus et l'outil
+   de déploiement en place), en commençant par les VM les plus critiques.
+
+### 18.4 Points à vérifier
+
+- Compatibilité de la méthode Bareos de ReaR avec Bareos 25.1 [?].
+- Stockage et régénération des ISO : à refaire après tout changement de partitions
+  ou de noyau ; prévoir une tâche planifiée et un emplacement hors de la VM.
+- Démarrage UEFI des VM restaurées.
+- Supervision : âge de la dernière ISO par VM, remonté dans Zabbix.
+
+### 18.5 Critères d'acceptation
+
+1. Une VM Rocky 9, une CentOS 7 et une Ubuntu 16.04 sont restaurées dans une VM vide
+   et démarrent, service applicatif fonctionnel.
+2. Le temps de restauration est mesuré et consigné pour chacune.
+3. La procédure de restauration est écrite et rejouée par une personne qui ne l'a
+   pas rédigée.
