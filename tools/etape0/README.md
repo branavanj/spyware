@@ -24,6 +24,7 @@ Remplacer `--insecure` par `--ca /chemin/ca.pem` dès que l'autorité interne es
 
 | # | Commande | Où | Modifie le cluster | Ce que l'essai prouve |
 |---|---|---|---|---|
+| 0 | `inventory` | n'importe où | non | taille des disques de toutes les VM, classées, total par cluster |
 | 1 | `check --vm VM` | n'importe où | non | versions d'API, lecture de la VM |
 | 2 | `snapshot --vm VM` | n'importe où | crée puis supprime un point | licence et droits sur les points de récupération |
 | 3 | `cbt --vm VM` | poste joignant aussi l'IP du cluster | deux points, supprimés | régions modifiées, part du disque à lire |

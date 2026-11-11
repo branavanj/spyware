@@ -7,6 +7,7 @@ pour Nutanix AHV, sur une VM de TEST.
 Aucune dependance : Python 3.9+ et sa bibliotheque standard.
 
 Sous-commandes (dans l'ordre conseille) :
+  inventory lecture seule : taille des disques de toutes les VM, par cluster
   check     lecture seule : versions d'API, VM, disques, cluster
   snapshot  cree puis supprime un point de recuperation (test licence/droits)
   cbt       deux points de recuperation, calcul des regions modifiees
@@ -433,6 +434,31 @@ def cmd_check(p, a):
     log("check termine : rien n'a ete modifie")
 
 
+def cmd_inventory(p, a):
+    """Tailles PROVISIONNEES (pas l'espace utilise) : sert a classer les VM."""
+    rows, per_cluster = [], {}
+    for vm in p.list("/vmm/%s/ahv/config/vms" % V["vmm"]):
+        if not vm.get("disks"):  # la liste peut etre allegee : on relit la VM
+            vm = p.get("/vmm/%s/ahv/config/vms/%s" % (V["vmm"], vm["extId"]))
+        disks = vm_disks(vm)
+        size = sum(d["size"] or 0 for d in disks)
+        cl = (vm.get("cluster") or {}).get("extId") or "?"
+        tot = per_cluster.setdefault(cl, [0, 0])
+        tot[0] += 1
+        tot[1] += size
+        rows.append((size, vm.get("name") or "?", len(disks), cl))
+    rows.sort(reverse=True)
+    log("%-40s %8s %7s  %s" % ("VM", "Gio", "disques", "cluster"))
+    for size, name, n, cl in rows[:a.top]:
+        log("%-40s %8.0f %7d  %s" % (name[:40], size / GIB, n, cl[:8]))
+    if len(rows) > a.top:
+        log("... %d autre(s) VM (voir --top)" % (len(rows) - a.top))
+    for cl, (n, size) in sorted(per_cluster.items()):
+        log("cluster %s : %d VM, %.1f Tio provisionnes" % (cl, n, size / GIB / 1024))
+    log("total : %d VM, %.1f Tio provisionnes (l'espace reellement utilise est inferieur)"
+        % (len(rows), sum(r[0] for r in rows) / GIB / 1024))
+
+
 def cmd_snapshot(p, a):
     vm = find_vm(p, a.vm)
     rp = create_rp(p, vm, "snap")
@@ -714,6 +740,8 @@ def main():
         if name == "read":
             s.add_argument("--max-gib", type=float, default=10, help="volume lu par disque")
     sub.add_parser("cleanup").add_argument("--yes", action="store_true")
+    sub.add_parser("inventory").add_argument("--top", type=int, default=40,
+                                             help="nombre de VM affichees")
     a = ap.parse_args()
 
     password = os.environ.get("AHV_PASSWORD") or getpass.getpass("Mot de passe de %s : " % a.user)
