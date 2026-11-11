@@ -149,6 +149,11 @@ Ces constats corrigent la v1 et orientent la conception.
    - états de tâche : `QUEUED`, `RUNNING`, `CANCELING`, `SUCCEEDED`, `FAILED`,
      `CANCELED`, `SUSPENDED` ; toute autre valeur est traitée comme un échec ;
    - l'API de tâches et de catégories existe depuis PC 2024.3.
+   - le client confirme que ces versions (Prism v4.4, Monitoring v4.3) sont celles de
+     son installation. Le plancher AOS 7.0 / pc.2024.3 est donc largement dépassé et
+     le risque « cluster sous le plancher » (§ 14) est levé. La restauration par
+     clonage d'un disque de Volume Group (vmm ≥ 4.1) est très probablement disponible ;
+     la spécification VMM le confirmera.
    Spécifications encore attendues : § 16, point 13.
 
 ## 5. Décisions de conception
