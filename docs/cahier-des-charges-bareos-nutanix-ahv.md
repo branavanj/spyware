@@ -7,6 +7,9 @@ rendus mesurables.
 Il couvre deux lots indépendants :
 
 - **Lot A** (§ 1 à 16) : le plugin File Daemon de sauvegarde image des VM AHV ;
+Le § 19 confronte l'ensemble au guide de l'ANSSI « Sauvegarde des systèmes
+d'information – Les fondamentaux » (v1.1) et liste les changements qui en découlent.
+
 - **Lot C** (§ 18) : ReaR (Relax-and-Recover) avec Bareos, sans développement, comme
   filet de sécurité immédiat et point de comparaison chiffré pour le lot A ;
 - **Lot B** (§ 17) : un plugin Director qui pousse le résultat de chaque job vers
@@ -827,3 +830,74 @@ n'affecte pas l'autre.
 2. Le temps de restauration est mesuré et consigné pour chacune.
 3. La procédure de restauration est écrite et rejouée par une personne qui ne l'a
    pas rédigée.
+
+---
+
+## 19. Conformité au guide ANSSI « Sauvegarde des systèmes d'information » (v1.1, ANSSI-BP-100)
+
+Les numéros R1 à R32 sont ceux du guide. Seules les recommandations qui touchent la
+conception sont reprises ; les autres (organisation, externalisation, mise au rebut)
+relèvent de l'exploitation.
+
+### 19.1 Ce que le guide confirme
+
+- **L'approche hybride est celle que le guide décrit** (§ 3.4) : « sauvegarder à la
+  fois la machine virtuelle entièrement (fréquence faible) et les données au sein de
+  la machine virtuelle (fréquence plus forte) ». Image pour reconstruire, agent
+  fichiers pour les données.
+- **Séparer disques « figés » et disques « vivants »** (§ 3.4, tableau 1) : le guide
+  cite l'optimisation qui consiste à distinguer système et applications d'un côté,
+  données et journaux de l'autre. C'est l'usage prévu de `exclude_disks`, et la
+  réponse au volume des VM de journaux (QRadar, ELK).
+- **Limites de l'image connues du guide** : redémarrage délicat de certaines
+  applications (bases de données) après restauration d'image, inadaptation à la
+  restauration de fichiers. Cohérent avec le § 2 (non-objectifs) et D8.
+- **Surface d'attaque** : le guide range parmi les inconvénients de l'agent sa
+  présence, avec privilèges élevés, sur chaque serveur. Le plugin n'ajoute rien dans
+  les VM.
+
+### 19.2 Changements apportés à la conception
+
+| Réf. | Exigence du guide | Conséquence |
+|---|---|---|
+| § 3.4 | Image à fréquence faible, données à fréquence forte | **Schéma par défaut révisé** : image du disque système hebdomadaire ou mensuelle, données par l'agent chaque jour. Les incrémentales d'image (étape 3) deviennent **optionnelles** : à décider après mesure à l'étape 0, pour les seules VM où une image quotidienne se justifie. Le stockage nécessaire baisse fortement. |
+| R8 | Flux à l'initiative du serveur vers les clients | La proxy est déclarée en **client passif** (`Passive = yes`) : le Storage ouvre la connexion de données vers la proxy, et non l'inverse [B]. Aucune connexion n'est initiée de la proxy vers l'infrastructure de sauvegarde. |
+| R1, § 3.4 | Serveurs de sauvegarde cloisonnés ; s'ils sont virtualisés, uniquement avec des serveurs de même sensibilité | Le Director et le Storage restent physiques, hors cluster : conforme. **La proxy est le point sensible** : c'est un client, mais elle voit tous les disques et tourne sur le cluster de production. Voir 19.3. |
+| R2, R3, R6 | Réseau d'administration, VLAN dédié, filtrage strict | Proxy sur un VLAN dédié à la sauvegarde. Flux autorisés, et eux seuls : Director → proxy, Storage → proxy, proxy → Prism Central et IP du cluster (9440). |
+| R5 | Authentification indépendante de l'annuaire de production | Compte de service **local** à Prism, jamais un compte d'annuaire. |
+| R17 | Comptes techniques : privilèges minimaux, renouvellement régulier des secrets, automatisé si possible | Rôle personnalisé minimal (§ 4.1). **Ajout** : clé d'API avec date d'expiration, procédure de renouvellement, âge de la clé remonté dans Zabbix. Le renouvellement est fait par un outil d'administration distinct, pas par le plugin (qui n'a pas le droit de créer des clés). |
+| R28 | Chiffrement et authentification mutuelle des flux | Confirme l'**absence d'option pour désactiver la vérification TLS** vers Prism (§ 9). Côté Bareos, TLS-PSK entre démons. |
+| R29, R31 | Protection des sauvegardes au niveau de la production ; chiffrement si le site n'est pas sûr | Chiffrement des données Bareos à activer pour les images, qui contiennent des disques complets ; R30 : clés au coffre et sauvegardées hors ligne. |
+| R10 | Journalisation centralisée des actions | Chaque action du plugin sur Prism (création, attachement, suppression, création de VM) est journalisée avec le JobId ; journaux de la proxy et du Director envoyés au collecteur existant. Les actions du compte de service sont aussi tracées par l'audit de Prism. |
+| R21 | Contrôle systématique, détection de volumes incohérents | Par VM : octets lus et taux de changement comparés aux sauvegardes précédentes ; un écart brutal lève un avertissement et un élément Zabbix. Une hausse soudaine du taux de changement est aussi un signal de chiffrement malveillant. |
+| R22, R23 | Tests réguliers, procédure et ordre de restauration | **Ajout** : job de test de restauration planifié (une VM tirée au sort par lot, restaurée, démarrée sans réseau, puis supprimée), résultat dans Zabbix. La documentation contient l'ordre de restauration (DNS, annuaire, puis applications). |
+| R27 | Les sauvegardes peuvent contenir des implants de l'attaquant | Une image restaure tout, y compris un éventuel code malveillant. Les défauts de D6 (VM éteinte, réseau déconnecté) permettent le contrôle avant remise en service. La documentation rappelle que, après un incident de sécurité, la reconstruction depuis des sources de confiance et la restauration des seules données sont préférables. |
+| R24 | Isolement d'urgence de l'infrastructure de sauvegarde | Procédure « bouton rouge » documentée : couper le VLAN de sauvegarde, arrêter les proxys, révoquer la clé d'API. |
+| R26 | Sauvegarder l'infrastructure de sauvegarde | Paquets du plugin, configuration, AC et procédure de reconstruction d'une proxy conservés avec la sauvegarde du Director. L'état des chaînes est déjà dans le catalogue (D2). |
+| R16, R18, R19 | Rôles d'opérateur séparés, pas de restauration par les utilisateurs, pas de restauration croisée | Profils Bareos distincts : exploitation (lancer, restaurer en nouvelle VM) et administration (`existing_vm=replace`, changement de cluster cible). |
+| R11, R12 | Règle 3-2-1, copie hors ligne indispensable | L'instantané conservé sur le cluster **n'est pas une copie de sauvegarde**. Les images suivent la même politique de copie hors ligne (bande) que les autres sauvegardes. |
+| R20 | Mises à jour proactives | Le plugin et ses dépendances sont suivis comme un composant de l'infrastructure de sauvegarde ; test système rejoué avant chaque montée de version (§ 14). |
+
+### 19.3 Point ouvert : emplacement de la proxy
+
+La proxy concentre un accès en lecture à tous les disques de la production et tourne
+sur le cluster qu'elle sauvegarde. Trois niveaux de réponse, du plus simple au plus strict :
+
+1. **Proxy durcie sur VLAN dédié** (retenu par défaut) : VM dédiée, aucun autre
+   service, filtrage de 19.2, accès d'administration restreint, mise à jour suivie.
+2. **Proxy éteinte hors des fenêtres de sauvegarde**, démarrée et arrêtée par le
+   Director : réduit le temps d'exposition.
+3. **Lecture par iSCSI depuis une machine du SI d'administration** (repli de D1) :
+   aucun composant de sauvegarde sur le cluster de production, au prix de l'ouverture
+   du réseau de stockage vers cette machine.
+
+Le choix dépend de la politique de sécurité de l'entité ; à trancher avant l'étape 1.
+
+### 19.4 Critères d'acceptation ajoutés
+
+1. La proxy fonctionne en client passif ; un pare-feu bloquant toute connexion
+   sortante de la proxy vers le Director et le Storage ne gêne pas les sauvegardes.
+2. Le test de restauration planifié tourne sans intervention et remonte dans Zabbix.
+3. Une clé d'API expirée produit une erreur explicite et une alerte, avant
+   l'expiration grâce au suivi de son âge.
+4. La procédure d'isolement d'urgence est écrite et a été jouée une fois.
