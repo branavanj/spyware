@@ -171,5 +171,5 @@ En haut, la « Vue globale » (mêmes informations que la première page du dash
 En dessous, des sections de détail repliées : Chaîne de logs, Système, Elasticsearch, Logstash, Kafka, Kibana.
 Requiert Grafana 11.6 ou plus récent avec le plugin Zabbix 6.x.
 
-Non testé : ce fichier n'a pas pu être chargé dans un Grafana réel. Le format des requêtes et des variables
-a été aligné sur le code et les dashboards d'exemple du plugin Zabbix 6.10.3.
+Testé sur Grafana 12.2.0 avec le plugin Zabbix 6.10.3 contre Zabbix 8.0.0 : la vue globale s'affiche avec des données réelles.
+Les sections de détail repliées n'ont pas été ouvertes pendant le test.

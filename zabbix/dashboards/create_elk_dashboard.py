@@ -31,6 +31,8 @@ IN_BRACKETS = '{{ITEM.NAME}.regsub("\\[(.*)\\]", "\\1")}'
 ES_NODE = '{{ITEM.NAME}.regsub("^ES (.*): ", "\\1")}'
 INT, STR, GROUP = 0, 1, 2
 HOSTS = []  # names of the hosts of the platform group, used to scope the graphs
+ITEMS = {}  # item key -> itemid for the single-value tiles (filled in main)
+TILE_KEYS = ["es.cluster.status", "es.cluster.number_of_nodes", "es.cluster.unassigned_shards"]
 
 
 class Api:
@@ -88,6 +90,39 @@ def graph(name, x, y, w, h, datasets):
     return widget("svggraph", name, x, y, w, h, fields)
 
 
+def table(name, x, y, w, h, gid, columns):
+    """Table with one row per host of the group ("Top hosts" widget).
+
+    columns = [(title, item name, kind, thresholds)], kind: "value" (as is) or "bar" (0-100 bar).
+    The first column is always the host name. Hosts without the first item are not listed."""
+    fields = [field(GROUP, "groupids.0", gid), field(INT, "rf_rate", 60), field(INT, "show_lines", 50),
+              field(STR, "columns.0.name", "Serveur"), field(INT, "columns.0.data", 2),
+              field(INT, "column", 1), field(INT, "order", 2)]
+    for i, (title, item, kind, thresholds) in enumerate(columns, start=1):
+        fields += [field(STR, "columns.%d.name" % i, title), field(INT, "columns.%d.data" % i, 1),
+                   field(STR, "columns.%d.item" % i, item),
+                   field(INT, "columns.%d.decimal_places" % i, 0 if (thresholds and kind == "value") else 1)]
+        if kind == "bar":
+            fields += [field(INT, "columns.%d.display" % i, 2), field(STR, "columns.%d.min" % i, "0"),
+                       field(STR, "columns.%d.max" % i, "100"), field(STR, "columns.%d.base_color" % i, GREEN)]
+        for j, (value, color) in enumerate(thresholds or []):
+            fields += [field(STR, "columnsthresholds.%d.color.%d" % (i, j), color),
+                       field(STR, "columnsthresholds.%d.threshold.%d" % (i, j), str(value))]
+    return widget("tophosts", name, x, y, w, h, fields)
+
+
+def tile(name, x, y, w, h, key, thresholds):
+    """Single big value ("Item value" widget) for the item with this key in the group, or None if absent."""
+    itemid = ITEMS.get(key)
+    if not itemid:
+        return None
+    fields = [field(4, "itemid.0", itemid), field(INT, "rf_rate", 60), field(INT, "show.0", 2),
+              field(INT, "value_size", 28), field(INT, "decimal_places", 0), field(INT, "units_show", 0)]
+    for i, (value, color) in enumerate(thresholds):
+        fields += [field(STR, "thresholds.%d.color" % i, color), field(STR, "thresholds.%d.threshold" % i, str(value))]
+    return widget("item", name, x, y, w, h, fields)
+
+
 def problems(name, x, y, w, h, gid):
     return widget("problems", name, x, y, w, h,
                   [field(GROUP, "groupids.0", gid), field(INT, "show_lines", 25), field(INT, "rf_rate", 60)])
@@ -105,29 +140,34 @@ def build_pages(gid):
     lag = [(0, GREEN), (10000, YELLOW), (100000, RED)]
     age = [(0, GREEN), (300, YELLOW), (900, RED)]
     # Global view: one screen, top to bottom = alerts, state of each component, log chain, system.
+    cpu_mem = [("CPU", "CPU utilization", "bar", [(80, YELLOW), (90, RED)]),
+               ("Mémoire", "Memory utilization", "bar", [(80, YELLOW), (90, RED)]),
+               ("Charge 1 min", "Load average (1m avg)", "value", None)]
+    brokers = [("Sous-répliquées", "Under replicated partitions", "value", [(0, GREEN), (1, RED)]),
+               ("Hors ligne", "Offline partitions count", "value", [(0, GREEN), (1, RED)]),
+               ("Messages/s", "Messages in per second", "value", None)]
     overview = [
-        widget("problemsbysv", "Problèmes par sévérité", 0, 0, 18, 3,
+        widget("problemsbysv", "Problèmes par sévérité", 0, 0, 16, 3,
                [field(GROUP, "groupids.0", gid), field(INT, "show_type", 1), field(INT, "rf_rate", 60)]),
-        honeycomb("Elasticsearch - santé du cluster par indicateur", 18, 0, 30, 3, gid,
+        tile("Santé du cluster", 16, 0, 10, 3, "es.cluster.status", [(0, GREEN), (1, YELLOW), (2, RED)]),
+        tile("Nœuds ES", 26, 0, 8, 3, "es.cluster.number_of_nodes", []),
+        tile("Shards non assignés", 34, 0, 10, 3, "es.cluster.unassigned_shards", [(0, GREEN), (1, ORANGE)]),
+        honeycomb("Elasticsearch - indicateurs de santé", 44, 0, 28, 3, gid,
                   "ES health [*]: Status", health, primary=IN_BRACKETS),
-        honeycomb("Kafka - partitions sous-répliquées", 48, 0, 12, 3, gid, "Under replicated partitions", zero_ok),
-        honeycomb("Kafka - partitions hors ligne", 60, 0, 12, 3, gid, "Offline partitions count", zero_ok),
-        honeycomb("Elasticsearch - statut de chaque serveur", 0, 3, 24, 4, gid, "ES: Node status", es_status),
-        honeycomb("Logstash - état de chaque serveur", 24, 3, 18, 4, gid, "Logstash: Service state", svc_state),
-        honeycomb("Kibana - état de chaque serveur", 42, 3, 12, 4, gid, "Kibana: Service state", svc_state),
-        honeycomb("Kafka - consommateurs actifs par groupe", 54, 3, 18, 4, gid,
-                  "Kafka lag [*]: Active consumers", [(0, RED), (1, GREEN)], primary=IN_BRACKETS),
-        honeycomb("Chaîne de logs - messages en attente dans Kafka", 0, 7, 18, 4, gid,
-                  "Kafka lag [*]: Messages waiting", lag, primary=IN_BRACKETS),
-        honeycomb("Chaîne de logs - âge du dernier document dans Elasticsearch", 18, 7, 18, 4, gid,
-                  "Log freshness [*]: Age of the latest document", age, primary=IN_BRACKETS),
-        graph("Chaîne de logs - documents livrés à Elasticsearch par seconde", 36, 7, 36, 4,
+        honeycomb("Elasticsearch - statut de chaque serveur", 0, 3, 22, 4, gid, "ES: Node status", es_status),
+        honeycomb("Logstash - état de chaque serveur", 22, 3, 16, 4, gid, "Logstash: Service state", svc_state),
+        honeycomb("Kibana - état de chaque serveur", 38, 3, 12, 4, gid, "Kibana: Service state", svc_state),
+        table("Kafka - brokers", 50, 3, 22, 4, gid, brokers),
+        graph("Chaîne de logs - messages en attente dans Kafka", 0, 7, 24, 5,
+              [("Kafka lag [*]: Messages waiting", ORANGE)]),
+        graph("Chaîne de logs - âge du dernier document (s)", 24, 7, 24, 5,
+              [("Log freshness [*]: Age of the latest document", RED)]),
+        graph("Chaîne de logs - documents livrés par seconde", 48, 7, 24, 5,
               [("Logstash output [*]: Documents delivered per second", GREEN)]),
-        honeycomb("CPU par serveur (%)", 0, 11, 18, 4, gid, "CPU utilization", load),
-        honeycomb("Mémoire par serveur (%)", 18, 11, 18, 4, gid, "Memory utilization", load),
-        graph("Bande passante par serveur (entrante / sortante)", 36, 11, 36, 4,
+        table("Serveurs - CPU, mémoire, charge", 0, 12, 36, 5, gid, cpu_mem),
+        graph("Bande passante par serveur (entrante / sortante)", 36, 12, 36, 5,
               [("Interface *: Bits received", "2196F3"), ("Interface *: Bits sent", GREEN)]),
-        problems("Problèmes en cours sur la plateforme", 0, 15, 72, 5, gid),
+        problems("Problèmes en cours sur la plateforme", 0, 17, 72, 5, gid),
     ]
     chain = [
         honeycomb("1. Kafka - messages en attente par groupe / topic", 0, 0, 24, 5, gid,
@@ -165,7 +205,11 @@ def build_pages(gid):
     ]
     logstash = [
         honeycomb("État de chaque serveur", 0, 0, 24, 5, gid, "Logstash: Service state", svc_state),
-        honeycomb("Heap JVM (%)", 24, 0, 24, 5, gid, "Logstash: Percent of JVM heap currently in use", heap),
+        table("Heap JVM, débit et file d'attente", 24, 0, 24, 5, gid,
+              [("Heap JVM", "Logstash: Percent of JVM heap currently in use", "bar", [(85, YELLOW), (95, RED)]),
+               ("Reçus/s", "Logstash: Events received per second", "value", None),
+               ("Émis/s", "Logstash: Events sent per second", "value", None),
+               ("En file", "Logstash: Events waiting in queues", "value", None)]),
         honeycomb("Remplissage des files persistantes (%)", 48, 0, 24, 5, gid,
                   "Logstash pipeline [*]: Persistent queue usage", queue,
                   primary="{HOST.NAME} " + IN_BRACKETS, decimals=1),
@@ -179,10 +223,14 @@ def build_pages(gid):
               [("Logstash: Events waiting in queues", ORANGE)]),
     ]
     kafka = [
-        honeycomb("Partitions sous-répliquées par broker", 0, 0, 24, 5, gid, "Under replicated partitions", zero_ok),
-        honeycomb("Partitions hors ligne par broker", 24, 0, 24, 5, gid, "Offline partitions count", zero_ok),
-        honeycomb("Partitions sous le minimum d'ISR par broker", 48, 0, 24, 5, gid,
-                  "Under minimum ISR partition count", zero_ok),
+        table("Brokers Kafka", 0, 0, 72, 5, gid,
+              [("Partitions sous-répliquées", "Under replicated partitions", "value", [(0, GREEN), (1, RED)]),
+               ("Partitions hors ligne", "Offline partitions count", "value", [(0, GREEN), (1, RED)]),
+               ("Sous le minimum d'ISR", "Under minimum ISR partition count", "value", [(0, GREEN), (1, RED)]),
+               ("Partitions", "Partition count", "value", None),
+               ("Messages/s", "Messages in per second", "value", None),
+               ("Octets entrants/s", "Bytes in per second", "value", None),
+               ("Octets sortants/s", "Bytes out per second", "value", None)]),
         graph("Messages entrants par seconde, par broker", 0, 5, 36, 5, [("Messages in per second", "2196F3")]),
         graph("Octets entrants / sortants par seconde", 36, 5, 36, 5,
               [("Bytes in per second", GREEN), ("Bytes out per second", "9C27B0")]),
@@ -197,8 +245,7 @@ def build_pages(gid):
         graph("Mémoire heap utilisée", 36, 5, 36, 5, [("Kibana: Heap memory used", "9C27B0")]),
     ]
     system = [
-        honeycomb("CPU par serveur (%)", 0, 0, 24, 5, gid, "CPU utilization", load),
-        honeycomb("Mémoire par serveur (%)", 24, 0, 24, 5, gid, "Memory utilization", load),
+        table("Serveurs - CPU, mémoire, charge", 0, 0, 48, 5, gid, cpu_mem),
         honeycomb("Systèmes de fichiers (% utilisé)", 48, 0, 24, 5, gid, "FS [*]: Space: Used, in %", load,
                   primary="{HOST.NAME} " + IN_BRACKETS),
         graph("Bande passante entrante par serveur et interface", 0, 5, 36, 6,
@@ -212,6 +259,7 @@ def build_pages(gid):
               [("Interface *: Inbound packets with errors", RED), ("Interface *: Outbound packets with errors", ORANGE),
                ("Interface *: Inbound packets discarded", YELLOW), ("Interface *: Outbound packets discarded", "9E9E9E")]),
     ]
+    overview = [w for w in overview if w]
     return [
         {"name": "Vue globale", "widgets": overview},
         {"name": "Chaîne de logs", "widgets": chain},
@@ -243,6 +291,9 @@ def main():
     if not hosts:
         sys.exit("No host in group: %s" % args.group)
     HOSTS.extend(sorted(h["host"] for h in hosts))
+    for item in api.call("item.get", {"groupids": groups[0]["groupid"], "filter": {"key_": TILE_KEYS},
+                                      "output": ["itemid", "key_"]}):
+        ITEMS.setdefault(item["key_"], item["itemid"])
     pages = build_pages(groups[0]["groupid"])
 
     existing = api.call("dashboard.get", {"filter": {"name": args.name}, "output": ["dashboardid"]})
