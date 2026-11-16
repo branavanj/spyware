@@ -11,8 +11,9 @@ Usage:
 
 Templates expected on the hosts of the group:
     Elasticsearch Cluster by HTTP (official), SOC Elasticsearch health report by HTTP,
-    SOC Elasticsearch node by HTTP, SOC Logstash by Zabbix agent 2,
-    SOC Kibana by HTTP, Apache Kafka by JMX (official).
+    SOC Elasticsearch node by HTTP, SOC Elasticsearch data freshness by HTTP,
+    SOC Logstash by Zabbix agent 2, SOC Kibana by HTTP,
+    Apache Kafka by JMX (official), SOC Kafka consumer lag by Zabbix agent 2.
 A missing template only leaves the matching widgets empty.
 """
 import argparse
@@ -107,6 +108,25 @@ def build_pages(gid):
                   "Offline partitions count", zero_ok),
         problems("Problèmes en cours sur la plateforme", 0, 13, 72, 7, gid),
     ]
+    chain = [
+        honeycomb("1. Kafka - messages en attente par groupe / topic", 0, 0, 24, 5, gid,
+                  "Kafka lag [*]: Messages waiting", [(0, GREEN), (10000, YELLOW), (100000, RED)], primary=IN_BRACKETS),
+        honeycomb("1. Kafka - consommateurs actifs par groupe / topic", 24, 0, 24, 5, gid,
+                  "Kafka lag [*]: Active consumers", [(0, RED), (1, GREEN)], primary=IN_BRACKETS),
+        honeycomb("3. Elasticsearch - âge du dernier document par motif d'index", 48, 0, 24, 5, gid,
+                  "Log freshness [*]: Age of the latest document", [(0, GREEN), (300, YELLOW), (900, RED)],
+                  primary=IN_BRACKETS),
+        graph("1. Kafka - messages en attente", 0, 5, 36, 5, [("Kafka lag [*]: Messages waiting", ORANGE)]),
+        graph("2. Logstash - événements émis par seconde, par pipeline", 36, 5, 36, 5,
+              [("Logstash pipeline [*]: Events sent per second", "9C27B0")]),
+        graph("2. Logstash vers Elasticsearch - documents livrés par seconde", 0, 10, 36, 5,
+              [("Logstash output [*]: Documents delivered per second", GREEN)]),
+        graph("2. Logstash vers Elasticsearch - envois en échec et documents rejetés", 36, 10, 36, 5,
+              [("Logstash: Failed bulk requests to Elasticsearch", RED),
+               ("Logstash output [*]: Documents rejected", ORANGE)]),
+        graph("3. Elasticsearch - documents reçus sur 5 minutes, par motif d'index", 0, 15, 72, 5,
+              [("Log freshness [*]: Documents in the last 5 minutes", "2196F3")]),
+    ]
     elasticsearch = [
         honeycomb("Statut de chaque serveur", 0, 0, 36, 5, gid, "ES: Node status", es_status),
         honeycomb("Heap JVM par nœud (%)", 36, 0, 36, 5, gid,
@@ -157,6 +177,7 @@ def build_pages(gid):
     ]
     return [
         {"name": "Vue d'ensemble", "widgets": overview},
+        {"name": "Chaîne de logs", "widgets": chain},
         {"name": "Elasticsearch", "widgets": elasticsearch},
         {"name": "Logstash", "widgets": logstash},
         {"name": "Kafka", "widgets": kafka},

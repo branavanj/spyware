@@ -63,6 +63,42 @@ CPU, mémoire et disques restent supervisés par le template Linux (Zabbix agent
 Alertes du rapport de santé : une par indicateur, YELLOW ou RED, après `{$ELASTICSEARCH.HEALTH.DELAY}` = 10m.
 `shards_availability` et `disk` sont exclus par défaut (`{$ELASTICSEARCH.HEALTH.INDICATOR.NOT_MATCHES}`) car déjà couverts ailleurs.
 
+## Chaîne de logs Kafka → Logstash → Elasticsearch
+
+Trois points de mesure, un par maillon, plus la page « Chaîne de logs » du dashboard :
+
+| Maillon | Template | À lier à | Ce qu'il dit |
+|---|---|---|---|
+| 1. Kafka | `templates/soc_kafka_consumer_lag_by_zabbix_agent2.yaml` | un seul broker | Messages en attente et consommateurs actifs, par groupe et topic |
+| 2. Logstash | `templates/soc_logstash_by_zabbix_agent2.yaml` | chaque Logstash | Débit par pipeline, documents livrés / rejetés par sortie elasticsearch, envois en échec |
+| 3. Elasticsearch | `templates/soc_elasticsearch_data_freshness_by_http.yaml` | l'hôte « cluster » | Âge du dernier document et volume sur 5 min, par motif d'index |
+
+Alertes de la chaîne :
+
+| Alerte | Sévérité | Signification |
+|---|---|---|
+| Kafka lag : No active consumer | HIGH | Plus personne ne lit le topic pour ce groupe (10 min) |
+| Kafka lag : Consumer lag is high | WARNING | Retard > `{$KAFKA.LAG.MAX.WARN}` messages pendant 15 min |
+| Logstash : Cannot deliver to Elasticsearch | AVERAGE | Envois bulk en échec pendant 5 min (une alerte par serveur Logstash) |
+| Logstash pipeline : Pipeline is stalled | AVERAGE | Le pipeline reçoit sans rien émettre depuis 10 min |
+| Logstash output : Documents are rejected | WARNING | Elasticsearch refuse des documents en continu depuis 10 min |
+| Log freshness : No recent document | HIGH | Aucun document récent pour ce motif d'index : la chaîne est coupée quelque part |
+
+Mise en place :
+
+1. Sur un broker Kafka : copier `agent/kafka_consumer_lag.sh` dans `/etc/zabbix/scripts/` (exécutable) et
+   `agent/kafka_consumer_lag.conf` dans `/etc/zabbix/zabbix_agent2.d/`, puis redémarrer zabbix-agent2.
+   Si Kafka n'est pas dans `/opt/kafka/bin`, définir `KAFKA_BIN` dans le script. Cluster SASL/TLS : fichier de
+   propriétés client dans `{$KAFKA.LAG.COMMAND.CONFIG}`.
+2. Sur l'hôte « cluster » : renseigner `{$ELASTICSEARCH.FRESHNESS.PATTERNS}` (ex. `logs-*,winlogbeat-*`).
+   Seuil par motif avec une macro à contexte, ex. `{$ELASTICSEARCH.FRESHNESS.MAX.AGE:"audit-*"}` = `2h`.
+3. Limiter les groupes suivis avec `{$KAFKA.LAG.GROUP.MATCHES}` ; seuil par groupe avec `{$KAFKA.LAG.MAX.WARN:"<groupe>"}`.
+
+Une panne franche lève une alerte par maillon touché (par exemple Logstash arrêté : Logstash injoignable,
+plus de consommateur Kafka, plus de document récent). Zabbix ne permet pas de les fusionner depuis un template.
+
+Après une mise à jour d'un template, les nouveaux items découverts apparaissent au plus tard une heure après.
+
 ## `templates/soc_logstash_by_zabbix_agent2.yaml` — SOC - Logstash par Zabbix agent 2 (testé sur Logstash 9.2.2)
 
 À lier à chaque serveur Logstash. L'API de monitoring (port 9600) est interrogée en local par Zabbix agent 2 :
@@ -71,9 +107,11 @@ aucun flux à ouvrir, l'API peut rester sur `127.0.0.1`. Prérequis : API sans a
 - Joignabilité, statut green/yellow/red calculé par Logstash, version, uptime, heap JVM.
 - Événements reçus et émis par seconde, événements en file, contre-pression.
 - Par pipeline (découverte) : débits, charge des workers, remplissage de la file persistante, dernier rechargement.
+- Par sortie elasticsearch (découverte) : documents livrés par seconde, documents rejetés, envois en échec, réponses 429.
 
 Alertes : Logstash injoignable (3m), statut RED (5m), statut YELLOW (30m), heap > 85 % sur 1 h,
-file persistante > 80 % sur 10 min, dernier rechargement de configuration en échec.
+file persistante > 80 % sur 10 min, dernier rechargement de configuration en échec,
+plus les trois alertes Logstash de la chaîne de logs ci-dessus.
 Si l'agent Zabbix est arrêté, ce template ne lève rien : seule l'alerte agent part.
 
 ## `templates/soc_kibana_by_http.yaml` — SOC - Kibana par HTTP (testé sur Kibana 9.2.2)
@@ -103,7 +141,7 @@ ZABBIX_API_TOKEN=<jeton API> python3 dashboards/create_elk_dashboard.py \
 ```
 
 Pages : Vue d'ensemble (une case colorée par serveur Elasticsearch / Logstash / Kibana, partitions Kafka,
-indicateurs de santé, problèmes en cours), Elasticsearch, Logstash, Kafka, Kibana.
+indicateurs de santé, problèmes en cours), Chaîne de logs, Elasticsearch, Logstash, Kafka, Kibana.
 Les graphiques sélectionnent les items par nom sur tous les hôtes, pas seulement ceux du groupe.
 
 ## `templates/soc_qradar_by_http.yaml` — SOC - QRadar par HTTP

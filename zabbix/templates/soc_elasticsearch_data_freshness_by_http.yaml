@@ -1,0 +1,188 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+  - uuid: b6134a9989f04441a897b9b3f6839771
+    name: Templates/SOC
+  templates:
+  - uuid: 78facf2b043d4305819c969d17e5ded2
+    template: SOC Elasticsearch data freshness by HTTP
+    name: SOC - Fraîcheur des données Elasticsearch par HTTP
+    description: |
+      Fraîcheur des données dans Elasticsearch : dernier maillon de la chaîne de logs, et preuve de bout en bout que les logs arrivent.
+      À lier au MÊME hôte « cluster » que le template officiel « Elasticsearch Cluster by HTTP ».
+
+      Pour chaque motif d'index listé dans {$ELASTICSEARCH.FRESHNESS.PATTERNS} (séparés par des virgules, ex. « logs-*,winlogbeat-* ») :
+      - âge du document le plus récent, d'après le champ {$ELASTICSEARCH.FRESHNESS.FIELD} ;
+      - nombre de documents reçus sur les 5 dernières minutes.
+
+      Une seule alerte par motif : « No recent document » quand l'âge dépasse {$ELASTICSEARCH.FRESHNESS.MAX.AGE} sur 3 relevés consécutifs.
+      Le seuil se règle par motif avec une macro à contexte, ex. {$ELASTICSEARCH.FRESHNESS.MAX.AGE:"audit-*"} = 2h pour une source peu bavarde.
+
+      Attention : l'âge repose sur l'horodatage des documents. Si une source envoie des dates fausses (passé ou futur), utiliser un champ d'ingestion
+      (ex. event.ingested) dans {$ELASTICSEARCH.FRESHNESS.FIELD}.
+      Les macros de connexion {$ELASTICSEARCH.*} sont celles du template officiel. La recherche est limitée aux {$ELASTICSEARCH.FRESHNESS.LOOKBACK.HOURS} dernières heures.
+    vendor:
+      name: SOC
+      version: 8.0-1
+    groups:
+    - name: Templates/SOC
+    items:
+    - uuid: 1cde9e5b30ac4125a752efaa3e26e8db
+      name: 'Log freshness: Get latest documents'
+      type: SCRIPT
+      key: es.freshness.get
+      delay: '{$ELASTICSEARCH.FRESHNESS.INTERVAL}'
+      history: '0'
+      value_type: TEXT
+      params: |
+        var p = JSON.parse(value);
+        var patterns = p.patterns.split(',');
+        var lookback = parseInt(p.lookback_hours, 10) || 24;
+        var out = [];
+
+        for (var i = 0; i < patterns.length; i++) {
+            var pattern = patterns[i].replace(/^\s+|\s+$/g, '');
+            if (!pattern) {
+                continue;
+            }
+            var range = {};
+            range[p.field] = {gte: 'now-' + lookback + 'h'};
+            var recent = {};
+            recent[p.field] = {gte: 'now-5m'};
+            var body = {
+                size: 0,
+                track_total_hits: false,
+                query: {range: range},
+                aggs: {last: {max: {field: p.field}}, recent: {filter: {range: recent}}}
+            };
+
+            var req = new HttpRequest();
+            req.addHeader('Content-Type: application/json');
+            if (p.user) {
+                req.addHeader('Authorization: Basic ' + btoa(p.user + ':' + p.password));
+            }
+            var resp = req.post(p.url + '/' + encodeURIComponent(pattern).replace(/%2A/g, '*').replace(/%2C/g, ',') +
+                '/_search?ignore_unavailable=true&allow_no_indices=true', JSON.stringify(body));
+            if (req.getStatus() !== 200) {
+                throw 'Elasticsearch answered HTTP ' + req.getStatus() + ' for "' + pattern + '": ' + String(resp).substring(0, 200);
+            }
+            var agg = JSON.parse(resp).aggregations || {};
+            var last = agg.last ? agg.last.value : null;
+            var age = last === null ? lookback * 3600 : Math.max(0, Math.round((Date.now() - last) / 1000));
+            out.push({pattern: pattern, age: age, recent: agg.recent ? agg.recent.doc_count : 0});
+        }
+        if (!out.length) {
+            throw 'no index pattern configured';
+        }
+        return JSON.stringify(out);
+      description: One small aggregation query per index pattern.
+      timeout: 30s
+      parameters:
+      - name: url
+        value: '{$ELASTICSEARCH.SCHEME}://{$ELASTICSEARCH.HOST}:{$ELASTICSEARCH.PORT}'
+      - name: user
+        value: '{$ELASTICSEARCH.USERNAME}'
+      - name: password
+        value: '{$ELASTICSEARCH.PASSWORD}'
+      - name: patterns
+        value: '{$ELASTICSEARCH.FRESHNESS.PATTERNS}'
+      - name: field
+        value: '{$ELASTICSEARCH.FRESHNESS.FIELD}'
+      - name: lookback_hours
+        value: '{$ELASTICSEARCH.FRESHNESS.LOOKBACK.HOURS}'
+      tags:
+      - tag: component
+        value: raw
+    discovery_rules:
+    - uuid: e1a835869cce4462b32553102c9c2b42
+      name: Index patterns discovery
+      type: DEPENDENT
+      key: es.freshness.discovery
+      delay: '0'
+      description: One entry per index pattern listed in {$ELASTICSEARCH.FRESHNESS.PATTERNS}.
+      item_prototypes:
+      - uuid: 04e8cc174cb647b5b672ab97ee535a94
+        name: 'Log freshness [{#PATTERN}]: Age of the latest document'
+        type: DEPENDENT
+        key: es.freshness.age["{#PATTERN}"]
+        units: s
+        description: Seconds since the most recent document of the pattern. When nothing was found in the lookback window, the value is the size of that window.
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $[?(@.pattern=='{#PATTERN}')].age.first()
+        master_item:
+          key: es.freshness.get
+        tags:
+        - tag: component
+          value: freshness
+        - tag: pattern
+          value: '{#PATTERN}'
+        trigger_prototypes:
+        - uuid: 9cc5ec233cb84db580c7ea39294ce9ca
+          expression: min(/SOC Elasticsearch data freshness by HTTP/es.freshness.age["{#PATTERN}"],#3)>{$ELASTICSEARCH.FRESHNESS.MAX.AGE:"{#PATTERN}"}
+          name: 'Log freshness [{#PATTERN}]: No recent document'
+          event_name: 'Log freshness [{#PATTERN}]: No document for more than {$ELASTICSEARCH.FRESHNESS.MAX.AGE:"{#PATTERN}"}'
+          opdata: 'Latest document: {ITEM.LASTVALUE1} ago'
+          priority: HIGH
+          description: 'No new document has reached Elasticsearch for this pattern: the log chain is broken somewhere between the sources and Elasticsearch.'
+          tags:
+          - tag: scope
+            value: availability
+      - uuid: e9cdbf05864542a59f14e85e4b2c745a
+        name: 'Log freshness [{#PATTERN}]: Documents in the last 5 minutes'
+        type: DEPENDENT
+        key: es.freshness.recent["{#PATTERN}"]
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $[?(@.pattern=='{#PATTERN}')].recent.first()
+        master_item:
+          key: es.freshness.get
+        tags:
+        - tag: component
+          value: freshness
+        - tag: pattern
+          value: '{#PATTERN}'
+      master_item:
+        key: es.freshness.get
+      lld_macro_paths:
+      - lld_macro: '{#PATTERN}'
+        path: $.pattern
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+    tags:
+    - tag: class
+      value: database
+    - tag: target
+      value: elasticsearch
+    macros:
+    - macro: '{$ELASTICSEARCH.FRESHNESS.FIELD}'
+      value: '@timestamp'
+      description: Date field used to find the latest document.
+    - macro: '{$ELASTICSEARCH.FRESHNESS.INTERVAL}'
+      value: 2m
+      description: How often freshness is checked.
+    - macro: '{$ELASTICSEARCH.FRESHNESS.LOOKBACK.HOURS}'
+      value: '24'
+      description: Search window in hours. Older documents are not looked at.
+    - macro: '{$ELASTICSEARCH.FRESHNESS.MAX.AGE}'
+      value: 15m
+      description: Maximum age of the latest document. Can be set per pattern with a context macro.
+    - macro: '{$ELASTICSEARCH.FRESHNESS.PATTERNS}'
+      description: REQUIRED. Comma-separated index patterns or data streams to watch, e.g. logs-*,winlogbeat-*
+    - macro: '{$ELASTICSEARCH.HOST}'
+      description: Hostname or IP of the Elasticsearch endpoint (same macro as the official template).
+    - macro: '{$ELASTICSEARCH.PASSWORD}'
+      type: SECRET_TEXT
+      description: Elasticsearch password (same macro as the official template).
+    - macro: '{$ELASTICSEARCH.PORT}'
+      value: '9200'
+      description: Elasticsearch HTTP port (same macro as the official template).
+    - macro: '{$ELASTICSEARCH.SCHEME}'
+      value: https
+      description: http or https (same macro as the official template).
+    - macro: '{$ELASTICSEARCH.USERNAME}'
+      description: Elasticsearch user allowed to search the watched indices (same macro as the official template).

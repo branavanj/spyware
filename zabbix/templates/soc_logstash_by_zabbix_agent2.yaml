@@ -15,16 +15,18 @@ zabbix_export:
       Ce qui est supervisé :
       - joignabilité de Logstash, statut global green / yellow / red calculé par Logstash, version, uptime ;
       - heap JVM, événements reçus et émis par seconde, file d'attente, contre-pression ;
-      - par pipeline (découverte) : débit entrant / sortant, charge des workers, remplissage de la file persistante, état du dernier rechargement de configuration.
+      - par pipeline (découverte) : débit entrant / sortant, charge des workers, remplissage de la file persistante, état du dernier rechargement de configuration ;
+      - par sortie elasticsearch (découverte) : documents livrés par seconde, documents rejetés, requêtes bulk en échec, réponses 429.
 
       Alertes : Logstash injoignable, statut RED, statut YELLOW (longue temporisation), heap élevé,
-      file persistante qui se remplit, dernier rechargement d'un pipeline en échec.
+      file persistante qui se remplit, dernier rechargement d'un pipeline en échec,
+      pipeline bloqué (reçoit sans émettre), envoi vers Elasticsearch impossible, documents rejetés par Elasticsearch.
       Si l'agent Zabbix est lui-même arrêté, ce template ne lève rien : seule l'alerte agent du template Linux part.
 
       Prérequis : API de monitoring sans authentification ni TLS sur {$LOGSTASH.API.HOST}:{$LOGSTASH.API.PORT} (configuration par défaut de Logstash).
     vendor:
       name: SOC
-      version: 8.0-1
+      version: 8.0-2
     groups:
     - name: Templates/SOC
     items:
@@ -33,12 +35,12 @@ zabbix_export:
       key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
       history: '0'
       value_type: TEXT
-      description: Logstash monitoring API, queried locally by Zabbix agent 2. When Logstash does not answer, the value is replaced with {} so that "API reachable" drops to 0. If the agent itself is down, nothing is collected and only the agent alert fires.
+      description: Logstash monitoring API, queried locally by Zabbix agent 2. When Logstash refuses the connection or does not answer in time, the value is replaced with {} so that "API reachable" drops to 0. If the agent itself is down, nothing is collected and only the agent alert fires.
       preprocessing:
       - type: CHECK_NOT_SUPPORTED
         parameters:
         - '0'
-        - Cannot get content of web page
+        - Cannot get content of web page|Timeout occurred while gathering data
         error_handler: CUSTOM_VALUE
         error_handler_params: '{}'
       - type: JAVASCRIPT
@@ -281,6 +283,47 @@ zabbix_export:
         error_handler: DISCARD_VALUE
       master_item:
         key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: a0f52b3358c74fd3ba25341877fb2496
+      name: 'Logstash: Failed bulk requests to Elasticsearch'
+      type: DEPENDENT
+      key: logstash.output.bulk.failures.total
+      description: Bulk requests that could not be sent to Elasticsearch since the previous check, all pipelines together. Logstash retries them.
+      tags:
+      - tag: component
+        value: output
+      triggers:
+      - uuid: e5644c8a1a664f41a9781e56766b34e1
+        expression: min(/SOC Logstash by Zabbix agent 2/logstash.output.bulk.failures.total,{$LOGSTASH.OUTPUT.FAILURE.DELAY})>0
+        name: 'Logstash: Cannot deliver to Elasticsearch'
+        priority: AVERAGE
+        opdata: 'Failed bulk requests since last check: {ITEM.LASTVALUE1}'
+        description: 'Every check for {$LOGSTASH.OUTPUT.FAILURE.DELAY} shows failed bulk requests: Logstash cannot send to Elasticsearch and events pile up upstream. One alert per Logstash server, whatever the number of pipelines.'
+        tags:
+        - tag: scope
+          value: availability
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var p = JSON.parse(value).pipelines;
+          if (!p) {
+              throw 'no pipeline data';
+          }
+          var n = 0;
+          for (var k in p) {
+              var o = (p[k].plugins || {}).outputs || [];
+              for (var i = 0; i < o.length; i++) {
+                  if (o[i].name === 'elasticsearch') {
+                      n += (o[i].bulk_requests || {}).failures || 0;
+                  }
+              }
+          }
+          return n;
+      - type: SIMPLE_CHANGE
+        parameters:
+        - ''
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
     discovery_rules:
     - uuid: 28c47292bdee43d9ac9c2d6b5ba9b978
       name: Pipelines discovery
@@ -485,6 +528,19 @@ zabbix_export:
           - 1d
         master_item:
           key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      trigger_prototypes:
+      - uuid: 36be28e1c5f048f883fa08388185a962
+        expression: min(/SOC Logstash by Zabbix agent 2/logstash.pipeline.events.in.rate["{#PIPELINE}"],{$LOGSTASH.PIPELINE.STALLED.DELAY})>0 and max(/SOC Logstash by Zabbix agent 2/logstash.pipeline.events.out.rate["{#PIPELINE}"],{$LOGSTASH.PIPELINE.STALLED.DELAY})=0
+        name: 'Logstash pipeline [{#PIPELINE}]: Pipeline is stalled'
+        priority: AVERAGE
+        opdata: 'In: {ITEM.LASTVALUE1}, out: {ITEM.LASTVALUE2}'
+        description: 'The pipeline has been receiving events for {$LOGSTASH.PIPELINE.STALLED.DELAY} without sending any: its outputs are blocked and events pile up in the queue. Not raised while "Cannot deliver to Elasticsearch" is active.'
+        dependencies:
+        - name: 'Logstash: Cannot deliver to Elasticsearch'
+          expression: min(/SOC Logstash by Zabbix agent 2/logstash.output.bulk.failures.total,{$LOGSTASH.OUTPUT.FAILURE.DELAY})>0
+        tags:
+        - tag: scope
+          value: availability
       master_item:
         key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
       lld_macro_paths:
@@ -506,6 +562,169 @@ zabbix_export:
       - type: DISCARD_UNCHANGED_HEARTBEAT
         parameters:
         - 1h
+    - uuid: b9666dc309cd4eb2bee0d6cdaf66e759
+      name: Elasticsearch outputs discovery
+      type: DEPENDENT
+      key: logstash.outputs.discovery
+      delay: '0'
+      filter:
+        conditions:
+        - macro: '{#PIPELINE}'
+          value: '{$LOGSTASH.PIPELINE.NOT_MATCHES}'
+          operator: NOT_MATCHES_REGEX
+      description: One entry per elasticsearch output plugin of each pipeline.
+      item_prototypes:
+      - uuid: 0181db06167a49e7961f39d23baa56ad
+        name: 'Logstash output [{#PIPELINE} / {#OUTPUT.NAME}]: Documents delivered per second'
+        type: DEPENDENT
+        key: logstash.output.docs.rate["{#PIPELINE}","{#OUTPUT.ID}"]
+        value_type: FLOAT
+        units: '!docs/s'
+        description: Documents accepted by Elasticsearch.
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].plugins.outputs[?(@.id=='{#OUTPUT.ID}')].first()
+        - type: JAVASCRIPT
+          parameters:
+          - |
+            var o = JSON.parse(value);
+            var b = o.bulk_requests || {};
+            var d = o.documents || {};
+            return d.successes || 0;
+        - type: CHANGE_PER_SECOND
+          parameters:
+          - ''
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+        tags:
+        - tag: component
+          value: output
+        - tag: pipeline
+          value: '{#PIPELINE}'
+      - uuid: e4bdcf7f3edb4328a1b2d24a5b1f342d
+        name: 'Logstash output [{#PIPELINE} / {#OUTPUT.NAME}]: Documents rejected'
+        type: DEPENDENT
+        key: logstash.output.docs.rejected["{#PIPELINE}","{#OUTPUT.ID}"]
+        description: Documents refused by Elasticsearch since the previous check (mapping conflict, closed index...). They are lost or sent to the dead letter queue.
+        trigger_prototypes:
+        - uuid: 7410da9a5c724cb689ac71cc220dd5ff
+          expression: min(/SOC Logstash by Zabbix agent 2/logstash.output.docs.rejected["{#PIPELINE}","{#OUTPUT.ID}"],{$LOGSTASH.OUTPUT.REJECTED.DELAY})>0
+          name: 'Logstash output [{#PIPELINE} / {#OUTPUT.NAME}]: Documents are rejected by Elasticsearch'
+          opdata: 'Rejected since last check: {ITEM.LASTVALUE1}'
+          priority: WARNING
+          description: 'Elasticsearch has been refusing documents continuously for {$LOGSTASH.OUTPUT.REJECTED.DELAY}: these logs are not indexed.'
+          dependencies:
+          - name: 'Logstash: Cannot deliver to Elasticsearch'
+            expression: min(/SOC Logstash by Zabbix agent 2/logstash.output.bulk.failures.total,{$LOGSTASH.OUTPUT.FAILURE.DELAY})>0
+          tags:
+          - tag: scope
+            value: availability
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].plugins.outputs[?(@.id=='{#OUTPUT.ID}')].first()
+        - type: JAVASCRIPT
+          parameters:
+          - |
+            var o = JSON.parse(value);
+            var b = o.bulk_requests || {};
+            var d = o.documents || {};
+            return (d.non_retryable_failures || 0) + (d.dlq_routed || 0);
+        - type: SIMPLE_CHANGE
+          parameters:
+          - ''
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+        tags:
+        - tag: component
+          value: output
+        - tag: pipeline
+          value: '{#PIPELINE}'
+      - uuid: 040b9461f2a64800b9968002e1c93b33
+        name: 'Logstash output [{#PIPELINE} / {#OUTPUT.NAME}]: Failed bulk requests'
+        type: DEPENDENT
+        key: logstash.output.bulk.failures["{#PIPELINE}","{#OUTPUT.ID}"]
+        description: Bulk requests that could not be sent since the previous check (Elasticsearch unreachable or in error). Logstash retries them.
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].plugins.outputs[?(@.id=='{#OUTPUT.ID}')].first()
+        - type: JAVASCRIPT
+          parameters:
+          - |
+            var o = JSON.parse(value);
+            var b = o.bulk_requests || {};
+            var d = o.documents || {};
+            return b.failures || 0;
+        - type: SIMPLE_CHANGE
+          parameters:
+          - ''
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+        tags:
+        - tag: component
+          value: output
+        - tag: pipeline
+          value: '{#PIPELINE}'
+      - uuid: 5f5fdb46af3343ebab5c019f8358445d
+        name: 'Logstash output [{#PIPELINE} / {#OUTPUT.NAME}]: Bulk requests throttled (429)'
+        type: DEPENDENT
+        key: logstash.output.bulk.throttled["{#PIPELINE}","{#OUTPUT.ID}"]
+        description: 'Bulk requests refused with HTTP 429 since the previous check: Elasticsearch is pushing back.'
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].plugins.outputs[?(@.id=='{#OUTPUT.ID}')].first()
+        - type: JAVASCRIPT
+          parameters:
+          - |
+            var o = JSON.parse(value);
+            var b = o.bulk_requests || {};
+            var d = o.documents || {};
+            return (b.responses || {})['429'] || 0;
+        - type: SIMPLE_CHANGE
+          parameters:
+          - ''
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+        tags:
+        - tag: component
+          value: output
+        - tag: pipeline
+          value: '{#PIPELINE}'
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      lld_macro_paths:
+      - lld_macro: '{#PIPELINE}'
+        path: $.pipeline
+      - lld_macro: '{#OUTPUT.ID}'
+        path: $.id
+      - lld_macro: '{#OUTPUT.NAME}'
+        path: $.label
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var p = JSON.parse(value).pipelines;
+          if (!p) {
+              throw 'no pipeline data';
+          }
+          var out = [];
+          for (var k in p) {
+              var o = (p[k].plugins || {}).outputs || [];
+              var n = 0;
+              for (var i = 0; i < o.length; i++) {
+                  if (o[i].name === 'elasticsearch') {
+                      n++;
+                      out.push({pipeline: k, id: o[i].id, label: 'elasticsearch' + (n > 1 ? ' #' + n : '')});
+                  }
+              }
+          }
+          return JSON.stringify(out);
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
     tags:
     - tag: class
       value: application
@@ -521,9 +740,18 @@ zabbix_export:
     - macro: '{$LOGSTASH.HEAP_USED.MAX.WARN}'
       value: '85'
       description: Warning threshold of JVM heap usage, in %.
+    - macro: '{$LOGSTASH.OUTPUT.FAILURE.DELAY}'
+      value: 5m
+      description: How long bulk requests must keep failing before a problem is raised.
+    - macro: '{$LOGSTASH.OUTPUT.REJECTED.DELAY}'
+      value: 10m
+      description: How long documents must keep being rejected before a problem is raised.
     - macro: '{$LOGSTASH.PIPELINE.NOT_MATCHES}'
       value: ^\.monitoring-logstash$
       description: Pipelines to ignore.
+    - macro: '{$LOGSTASH.PIPELINE.STALLED.DELAY}'
+      value: 10m
+      description: How long a pipeline must receive events without sending any before a problem is raised.
     - macro: '{$LOGSTASH.QUEUE.FILL.MAX.WARN}'
       value: '80'
       description: Warning threshold of persistent queue usage, in %.

@@ -1,0 +1,191 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+  - uuid: b6134a9989f04441a897b9b3f6839771
+    name: Templates/SOC
+  templates:
+  - uuid: 36de57dc240e4fbaa6f0905eda0fc943
+    template: SOC Kafka consumer lag by Zabbix agent 2
+    name: SOC - Retard des consommateurs Kafka par Zabbix agent 2
+    description: |
+      Retard de consommation Kafka (consumer lag) par groupe de consommateurs et par topic : c'est le premier maillon de la chaîne de logs.
+      À lier à UN SEUL broker Kafka (Zabbix agent 2 requis sur ce broker).
+
+      Prérequis sur ce broker (fichiers fournis dans zabbix/agent/) :
+      - /etc/zabbix/scripts/kafka_consumer_lag.sh (exécutable par l'utilisateur zabbix) ;
+      - /etc/zabbix/zabbix_agent2.d/kafka_consumer_lag.conf, puis redémarrage de l'agent.
+      Le script appelle kafka-consumer-groups.sh (environ 2 à 3 secondes par appel).
+
+      Par groupe et topic : messages en attente, nombre de consommateurs actifs, partitions sans consommateur.
+
+      Alertes :
+      - « No active consumer » : plus aucun consommateur depuis {$KAFKA.LAG.NOCONSUMER.DELAY} (Logstash arrêté ou déconnecté de Kafka) ;
+      - « Consumer lag is high » : retard supérieur à {$KAFKA.LAG.MAX.WARN} messages pendant {$KAFKA.LAG.DELAY}.
+        Le seuil se règle par groupe avec une macro à contexte, ex. {$KAFKA.LAG.MAX.WARN:"logstash-soc"}.
+
+      Limiter aux groupes Logstash avec {$KAFKA.LAG.GROUP.MATCHES}. Cluster sécurisé (SASL / TLS) : indiquer un fichier de propriétés client dans {$KAFKA.LAG.COMMAND.CONFIG}.
+    vendor:
+      name: SOC
+      version: 8.0-1
+    groups:
+    - name: Templates/SOC
+    items:
+    - uuid: 02c879865e864ebfbbe7ac76a1c419a9
+      name: 'Kafka lag: Get consumer groups'
+      key: kafka.consumer.lag[{$KAFKA.LAG.BOOTSTRAP},{$KAFKA.LAG.COMMAND.CONFIG}]
+      delay: '{$KAFKA.LAG.INTERVAL}'
+      history: '0'
+      value_type: TEXT
+      description: JSON produced by kafka_consumer_lag.sh on the broker.
+      timeout: 30s
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 688f94d42c1c4bbc806e1e38a6a3e79f
+      name: 'Kafka lag: Number of group/topic pairs'
+      type: DEPENDENT
+      key: kafka.lag.count
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.length()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: kafka.consumer.lag[{$KAFKA.LAG.BOOTSTRAP},{$KAFKA.LAG.COMMAND.CONFIG}]
+      tags:
+      - tag: component
+        value: consumer
+    discovery_rules:
+    - uuid: ff7082c1245e4826a4de7c44e1be8d37
+      name: Consumer groups discovery
+      type: DEPENDENT
+      key: kafka.lag.discovery
+      delay: '0'
+      filter:
+        evaltype: AND
+        conditions:
+        - macro: '{#GROUP}'
+          value: '{$KAFKA.LAG.GROUP.MATCHES}'
+        - macro: '{#GROUP}'
+          value: '{$KAFKA.LAG.GROUP.NOT_MATCHES}'
+          operator: NOT_MATCHES_REGEX
+      description: One entry per consumer group and topic.
+      item_prototypes:
+      - uuid: 5038231a99154cd89865a1cfa5b22df5
+        name: 'Kafka lag [{#GROUP} / {#TOPIC}]: Messages waiting'
+        type: DEPENDENT
+        key: kafka.lag.total["{#GROUP}","{#TOPIC}"]
+        description: Messages produced to the topic and not yet consumed by the group (sum over partitions).
+        trigger_prototypes:
+        - uuid: 47a04c71fbef4fcabd9a5b3c5ffac9dd
+          expression: min(/SOC Kafka consumer lag by Zabbix agent 2/kafka.lag.total["{#GROUP}","{#TOPIC}"],{$KAFKA.LAG.DELAY})>{$KAFKA.LAG.MAX.WARN:"{#GROUP}"}
+          name: 'Kafka lag [{#GROUP} / {#TOPIC}]: Consumer lag is high'
+          opdata: 'Lag: {ITEM.LASTVALUE1}'
+          priority: WARNING
+          description: 'The group has stayed more than {$KAFKA.LAG.MAX.WARN:"{#GROUP}"} messages behind for {$KAFKA.LAG.DELAY}: consumers (Logstash) do not keep up with producers.'
+          dependencies:
+          - name: 'Kafka lag [{#GROUP} / {#TOPIC}]: No active consumer'
+            expression: max(/SOC Kafka consumer lag by Zabbix agent 2/kafka.lag.members["{#GROUP}","{#TOPIC}"],{$KAFKA.LAG.NOCONSUMER.DELAY})=0
+          tags:
+          - tag: scope
+            value: performance
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $[?(@.group=='{#GROUP}' && @.topic=='{#TOPIC}')].lag.first()
+        master_item:
+          key: kafka.consumer.lag[{$KAFKA.LAG.BOOTSTRAP},{$KAFKA.LAG.COMMAND.CONFIG}]
+        tags:
+        - tag: component
+          value: consumer
+        - tag: group
+          value: '{#GROUP}'
+        - tag: topic
+          value: '{#TOPIC}'
+      - uuid: b463bf9a76ff4fb0a753d5974c22f8f9
+        name: 'Kafka lag [{#GROUP} / {#TOPIC}]: Active consumers'
+        type: DEPENDENT
+        key: kafka.lag.members["{#GROUP}","{#TOPIC}"]
+        description: Number of consumers of the group currently attached to the topic.
+        trigger_prototypes:
+        - uuid: 93f4bd914f3044099b31d5531ab25c00
+          expression: max(/SOC Kafka consumer lag by Zabbix agent 2/kafka.lag.members["{#GROUP}","{#TOPIC}"],{$KAFKA.LAG.NOCONSUMER.DELAY})=0
+          name: 'Kafka lag [{#GROUP} / {#TOPIC}]: No active consumer'
+          priority: HIGH
+          description: 'Nobody has been consuming this topic for this group for {$KAFKA.LAG.NOCONSUMER.DELAY}: the log chain is stopped at Kafka.'
+          tags:
+          - tag: scope
+            value: availability
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $[?(@.group=='{#GROUP}' && @.topic=='{#TOPIC}')].members.first()
+        master_item:
+          key: kafka.consumer.lag[{$KAFKA.LAG.BOOTSTRAP},{$KAFKA.LAG.COMMAND.CONFIG}]
+        tags:
+        - tag: component
+          value: consumer
+        - tag: group
+          value: '{#GROUP}'
+        - tag: topic
+          value: '{#TOPIC}'
+      - uuid: 3d5d8e3fb9814217aca69a5354798233
+        name: 'Kafka lag [{#GROUP} / {#TOPIC}]: Partitions without consumer'
+        type: DEPENDENT
+        key: kafka.lag.unassigned["{#GROUP}","{#TOPIC}"]
+        description: Partitions of the topic that no consumer of the group is reading.
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $[?(@.group=='{#GROUP}' && @.topic=='{#TOPIC}')].unassigned.first()
+        master_item:
+          key: kafka.consumer.lag[{$KAFKA.LAG.BOOTSTRAP},{$KAFKA.LAG.COMMAND.CONFIG}]
+        tags:
+        - tag: component
+          value: consumer
+        - tag: group
+          value: '{#GROUP}'
+        - tag: topic
+          value: '{#TOPIC}'
+      master_item:
+        key: kafka.consumer.lag[{$KAFKA.LAG.BOOTSTRAP},{$KAFKA.LAG.COMMAND.CONFIG}]
+      lld_macro_paths:
+      - lld_macro: '{#GROUP}'
+        path: $.group
+      - lld_macro: '{#TOPIC}'
+        path: $.topic
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+    tags:
+    - tag: class
+      value: application
+    - tag: target
+      value: kafka
+    macros:
+    - macro: '{$KAFKA.LAG.BOOTSTRAP}'
+      value: localhost:9092
+      description: Kafka bootstrap server, as seen from the broker itself.
+    - macro: '{$KAFKA.LAG.COMMAND.CONFIG}'
+      description: Optional client properties file on the broker (SASL / TLS). Empty for a plaintext listener.
+    - macro: '{$KAFKA.LAG.DELAY}'
+      value: 15m
+      description: How long the lag must stay above the threshold before a problem is raised.
+    - macro: '{$KAFKA.LAG.GROUP.MATCHES}'
+      value: .*
+      description: Consumer groups to monitor (regular expression).
+    - macro: '{$KAFKA.LAG.GROUP.NOT_MATCHES}'
+      value: ^console-consumer-
+      description: Consumer groups to ignore (regular expression).
+    - macro: '{$KAFKA.LAG.INTERVAL}'
+      value: 2m
+      description: How often the lag is collected.
+    - macro: '{$KAFKA.LAG.MAX.WARN}'
+      value: '100000'
+      description: Lag threshold in messages. Can be set per group with a context macro.
+    - macro: '{$KAFKA.LAG.NOCONSUMER.DELAY}'
+      value: 10m
+      description: How long a group must stay without consumer before a problem is raised.
