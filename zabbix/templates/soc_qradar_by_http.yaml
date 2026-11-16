@@ -1,0 +1,214 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+    - uuid: b6134a9989f04441a897b9b3f6839771
+      name: Templates/SOC
+  templates:
+    - uuid: a31536740995434795f0a16020d3be94
+      template: 'SOC QRadar by HTTP'
+      name: 'SOC - QRadar par HTTP'
+      description: |
+        Supervision d'un déploiement IBM QRadar par l'API REST de la Console. Aucun agent sur les appliances.
+        À lier à UN seul hôte : la Console QRadar. Les autres machines du déploiement (Event Processor,
+        Event Collector, Data Node, App Host...) sont découvertes automatiquement.
+
+        Pour chaque machine du déploiement :
+        - statut vu par la Console (Active, Standby, Offline...) ;
+        - EPS moyen, EPS de pointe et EPS alloué.
+
+        Mise en œuvre :
+        1. Dans QRadar : Admin > Authorized Services, créer un jeton en lecture seule.
+        2. Sur l'hôte Zabbix de la Console, renseigner {$QRADAR.API.TOKEN}.
+        3. Vérifier au préalable la réponse de l'API depuis le serveur/proxy Zabbix :
+           curl -k -H 'SEC: <jeton>' -H 'Accept: application/json' https://<console>/api/config/deployment/hosts
+
+        Le certificat de la Console n'est pas vérifié.
+        Les métriques système (CPU, mémoire, disques) de chaque appliance se supervisent à part, en SNMP.
+      vendor:
+        name: SOC
+        version: 8.0-1
+      groups:
+        - name: Templates/SOC
+      items:
+        - uuid: 1873ccc2374c4a63bd04bcad77fbd18b
+          name: 'QRadar : machines du déploiement (données brutes)'
+          type: HTTP_AGENT
+          key: qradar.hosts.get
+          delay: '{$QRADAR.INTERVAL}'
+          history: '0'
+          value_type: TEXT
+          description: 'Liste des machines du déploiement renvoyée par /api/config/deployment/hosts.'
+          timeout: 30s
+          url: 'https://{HOST.CONN}:{$QRADAR.API.PORT}/api/config/deployment/hosts'
+          headers:
+            - name: SEC
+              value: '{$QRADAR.API.TOKEN}'
+            - name: Accept
+              value: application/json
+          tags:
+            - tag: component
+              value: raw
+        - uuid: 6778cd30f1c3445ca83dfb263262bdf4
+          name: 'QRadar : nombre de machines du déploiement'
+          type: DEPENDENT
+          key: qradar.hosts.count
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.length()
+          master_item:
+            key: qradar.hosts.get
+          tags:
+            - tag: component
+              value: deployment
+          triggers:
+            - uuid: 5bba05f562b6406ba6230c59cccea301
+              expression: 'nodata(/SOC QRadar by HTTP/qradar.hosts.count,{$QRADAR.API.NODATA})=1'
+              name: 'QRadar : l''API de la Console ne répond plus'
+              event_name: 'QRadar : l''API de la Console ne répond plus depuis {$QRADAR.API.NODATA}'
+              priority: HIGH
+              description: 'Aucune réponse valide de l''API : Console arrêtée, flux coupé ou jeton refusé.'
+              tags:
+                - tag: scope
+                  value: availability
+            - uuid: 6d49d80f1e3f48c3a0b6cf7148cc84e7
+              expression: 'change(/SOC QRadar by HTTP/qradar.hosts.count)<>0'
+              name: 'QRadar : le nombre de machines du déploiement a changé'
+              opdata: 'Machines : {ITEM.LASTVALUE1}'
+              priority: INFO
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: notice
+      discovery_rules:
+        - uuid: 2bcb60fcf51a4ff4bb8c0d5283920e91
+          name: 'Découverte des machines QRadar'
+          type: DEPENDENT
+          key: qradar.hosts.discovery
+          description: 'Une entrée par machine du déploiement QRadar.'
+          item_prototypes:
+            - uuid: ea3981e7cbb649fb91949db804b7ba34
+              name: 'QRadar [{#QR.HOSTNAME}] : statut'
+              type: DEPENDENT
+              key: 'qradar.host.status[{#QR.ID}]'
+              value_type: CHAR
+              description: 'Statut de la machine vu par la Console.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == {#QR.ID})].status.first()'
+              master_item:
+                key: qradar.hosts.get
+              tags:
+                - tag: component
+                  value: status
+                - tag: qradar_host
+                  value: '{#QR.HOSTNAME}'
+              trigger_prototypes:
+                - uuid: 7c1caea76d5d4aeeb3d1c1c11519b827
+                  expression: 'find(/SOC QRadar by HTTP/qradar.host.status[{#QR.ID}],#2,"regexp","{$QRADAR.HOST.STATUS.OK}")=0'
+                  name: 'QRadar [{#QR.HOSTNAME}] : machine en anomalie'
+                  opdata: 'Statut : {ITEM.LASTVALUE1}'
+                  priority: HIGH
+                  description: 'Le statut de la machine ne correspond pas à {$QRADAR.HOST.STATUS.OK} depuis 2 relevés.'
+                  tags:
+                    - tag: scope
+                      value: availability
+            - uuid: 5666daf9c3714b0195887744243ab370
+              name: 'QRadar [{#QR.HOSTNAME}] : EPS moyen'
+              type: DEPENDENT
+              key: 'qradar.host.eps.avg[{#QR.ID}]'
+              value_type: FLOAT
+              units: eps
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == {#QR.ID})].average_eps.first()'
+              master_item:
+                key: qradar.hosts.get
+              tags:
+                - tag: component
+                  value: eps
+                - tag: qradar_host
+                  value: '{#QR.HOSTNAME}'
+            - uuid: 596c6c263c4d4207929f007071f13cfe
+              name: 'QRadar [{#QR.HOSTNAME}] : EPS de pointe'
+              type: DEPENDENT
+              key: 'qradar.host.eps.peak[{#QR.ID}]'
+              value_type: FLOAT
+              units: eps
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == {#QR.ID})].peak_eps.first()'
+              master_item:
+                key: qradar.hosts.get
+              tags:
+                - tag: component
+                  value: eps
+                - tag: qradar_host
+                  value: '{#QR.HOSTNAME}'
+            - uuid: 98e8874242d44f98bb8da1ad8d51daa9
+              name: 'QRadar [{#QR.HOSTNAME}] : EPS alloué'
+              type: DEPENDENT
+              key: 'qradar.host.eps.alloc[{#QR.ID}]'
+              value_type: FLOAT
+              units: eps
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == {#QR.ID})].eps_allocation.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: qradar.hosts.get
+              tags:
+                - tag: component
+                  value: eps
+                - tag: qradar_host
+                  value: '{#QR.HOSTNAME}'
+          trigger_prototypes:
+            - uuid: a6fac20ecc98490da4361d6d63beedc7
+              expression: 'last(/SOC QRadar by HTTP/qradar.host.eps.alloc[{#QR.ID}])>0 and min(/SOC QRadar by HTTP/qradar.host.eps.avg[{#QR.ID}],15m)>last(/SOC QRadar by HTTP/qradar.host.eps.alloc[{#QR.ID}])*{$QRADAR.EPS.UTIL.WARN}/100'
+              name: 'QRadar [{#QR.HOSTNAME}] : EPS proche de la limite allouée'
+              event_name: 'QRadar [{#QR.HOSTNAME}] : EPS moyen > {$QRADAR.EPS.UTIL.WARN}% de l''allocation pendant 15m'
+              opdata: 'EPS moyen : {ITEM.LASTVALUE2}, alloué : {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'Au-delà de l''allocation, QRadar met les événements en file puis les écarte.'
+              tags:
+                - tag: scope
+                  value: capacity
+          master_item:
+            key: qradar.hosts.get
+          lld_macro_paths:
+            - lld_macro: '{#QR.APPLIANCE}'
+              path: $.appliance.type
+            - lld_macro: '{#QR.HOSTNAME}'
+              path: $.hostname
+            - lld_macro: '{#QR.ID}'
+              path: $.id
+      tags:
+        - tag: class
+          value: application
+        - tag: target
+          value: qradar
+      macros:
+        - macro: '{$QRADAR.API.NODATA}'
+          value: 15m
+          description: 'Durée sans réponse de l''API avant alerte.'
+        - macro: '{$QRADAR.API.PORT}'
+          value: '443'
+          description: 'Port HTTPS de la Console QRadar.'
+        - macro: '{$QRADAR.API.TOKEN}'
+          type: SECRET_TEXT
+          description: 'OBLIGATOIRE. Jeton « Authorized Service » QRadar en lecture seule.'
+        - macro: '{$QRADAR.EPS.UTIL.WARN}'
+          value: '90'
+          description: 'Seuil d''alerte de l''EPS moyen, en % de l''EPS alloué.'
+        - macro: '{$QRADAR.HOST.STATUS.OK}'
+          value: '^(Active|Standby)$'
+          description: 'Expression régulière des statuts considérés comme normaux.'
+        - macro: '{$QRADAR.INTERVAL}'
+          value: 5m
+          description: 'Fréquence d''interrogation de l''API.'

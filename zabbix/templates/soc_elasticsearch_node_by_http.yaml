@@ -1,0 +1,1387 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+  - uuid: b6134a9989f04441a897b9b3f6839771
+    name: Templates/SOC
+  templates:
+  - uuid: c9ee1a3ef3d14082a1e2a97cefaa01a0
+    template: SOC Elasticsearch node by HTTP
+    name: SOC - Nœud Elasticsearch par HTTP
+    description: |
+      Détail et statut d'UN serveur Elasticsearch. À lier à chaque nœud du cluster (masters, data, ML).
+      Les requêtes sont faites par le serveur/proxy Zabbix sur l'API HTTP du nœud lui-même ({HOST.CONN}:{$ELASTICSEARCH.PORT}) : aucun agent n'est requis.
+
+      Les métriques, clés, seuils, macros et graphiques par nœud sont ceux du template officiel « Elasticsearch Cluster by HTTP »
+      (heap JVM, latences, pools de threads, HTTP, disque), sans l'index [{#ES.NODE}] puisque l'hôte EST le nœud.
+
+      En plus du template officiel :
+      - « ES: Node status » : 0 = Unreachable, 1 = Out of cluster, 2 = OK ;
+      - nom, version, rôles, CPU, espace disque libre en %.
+
+      Pour ne pas avoir d'alertes en double :
+      - lier le template officiel à UN seul hôte représentant le cluster et y DÉSACTIVER la règle « Cluster nodes discovery » :
+        l'officiel ne garde alors que les alertes globales (green/yellow/red, shards, masters) et ce template porte les alertes par nœud ;
+      - un nœud injoignable ne lève qu'une alerte : les autres déclencheurs n'ont plus de données et restent muets.
+
+      Les macros {$ELASTICSEARCH.*} portent le même nom que dans le template officiel : en macros globales, elles servent aux deux.
+      Le certificat du nœud n'est pas vérifié (connexion par adresse IP).
+    vendor:
+      name: SOC
+      version: 8.0-2
+    groups:
+    - name: Templates/SOC
+    items:
+    - uuid: 5bc979262a7c44db84cabc8475947adf
+      name: 'ES: Get node info'
+      type: HTTP_AGENT
+      key: es.node.get_root
+      history: '0'
+      value_type: TEXT
+      authtype: BASIC
+      username: '{$ELASTICSEARCH.USERNAME}'
+      password: '{$ELASTICSEARCH.PASSWORD}'
+      description: Root API endpoint of this node. On any error the value is replaced with {} so that the node status drops to 0.
+      preprocessing: &id001
+      - type: CHECK_NOT_SUPPORTED
+        parameters:
+        - '-1'
+        error_handler: CUSTOM_VALUE
+        error_handler_params: '{}'
+      timeout: 10s
+      url: '{$ELASTICSEARCH.SCHEME}://{HOST.CONN}:{$ELASTICSEARCH.PORT}/'
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 7f762bba09a54998b37ed75a52948930
+      name: 'ES: API reachable'
+      type: DEPENDENT
+      key: es.node.ping
+      description: 1 if the HTTP API of this node answers correctly, 0 otherwise.
+      valuemap:
+        name: ES yes/no
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          try {
+              return JSON.parse(value).cluster_name ? 1 : 0;
+          }
+          catch (e) {
+              return 0;
+          }
+      master_item:
+        key: es.node.get_root
+      tags:
+      - tag: component
+        value: status
+    - uuid: f6c978509ad147ddba92f28f30f844bd
+      name: 'ES: Node name'
+      type: DEPENDENT
+      key: es.node.name
+      value_type: CHAR
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.name
+        error_handler: DISCARD_VALUE
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: es.node.get_root
+      tags:
+      - tag: component
+        value: info
+    - uuid: 4c73a92bb2a74e8cae7953cff5f08415
+      name: 'ES: Cluster name'
+      type: DEPENDENT
+      key: es.node.cluster_name
+      value_type: CHAR
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.cluster_name
+        error_handler: DISCARD_VALUE
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: es.node.get_root
+      tags:
+      - tag: component
+        value: info
+    - uuid: b2c9aa8a6c2c432b90ad9883dda95171
+      name: 'ES: Version'
+      type: DEPENDENT
+      key: es.node.version
+      value_type: CHAR
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.version.number
+        error_handler: DISCARD_VALUE
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: es.node.get_root
+      tags:
+      - tag: component
+        value: info
+    - uuid: 6ca5404931cf443eb40a2ed4db682940
+      name: 'ES: Get cluster health seen from this node'
+      type: HTTP_AGENT
+      key: es.node.get_health
+      history: '0'
+      value_type: TEXT
+      authtype: BASIC
+      username: '{$ELASTICSEARCH.USERNAME}'
+      password: '{$ELASTICSEARCH.PASSWORD}'
+      description: 'A node without a master answers 503: the value is then replaced with {}.'
+      preprocessing: *id001
+      timeout: 15s
+      url: '{$ELASTICSEARCH.SCHEME}://{HOST.CONN}:{$ELASTICSEARCH.PORT}/_cluster/health?master_timeout=5s&filter_path=status,number_of_nodes'
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 83895d61a6a54c52942936dba8794e65
+      name: 'ES: Joined the cluster'
+      type: DEPENDENT
+      key: es.node.joined
+      description: 1 if this node sees a master and is part of the cluster, 0 otherwise.
+      valuemap:
+        name: ES yes/no
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          try {
+              return JSON.parse(value).number_of_nodes > 0 ? 1 : 0;
+          }
+          catch (e) {
+              return 0;
+          }
+      master_item:
+        key: es.node.get_health
+      tags:
+      - tag: component
+        value: status
+    - uuid: eda61c255a424cd6829c325fc86a1f1f
+      name: 'ES: Number of nodes seen in the cluster'
+      type: DEPENDENT
+      key: es.node.cluster_nodes
+      description: Number of cluster nodes seen from this node. A difference between servers reveals a split cluster.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.number_of_nodes
+        error_handler: DISCARD_VALUE
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_health
+      tags:
+      - tag: component
+        value: status
+    - uuid: 9d3065d33656465f9b914a3a78a57e5f
+      name: 'ES: Node status'
+      type: CALCULATED
+      key: es.node.status
+      params: last(//es.node.ping)+last(//es.node.joined)
+      description: 0 = Unreachable, 1 = Out of cluster, 2 = OK.
+      valuemap:
+        name: ES node status
+      tags:
+      - tag: component
+        value: status
+      triggers:
+      - uuid: dde9b009c13e427e97f2872eebf87da6
+        expression: max(/SOC Elasticsearch node by HTTP/es.node.status,{$ELASTICSEARCH.NODE.STATUS.DELAY})=0
+        name: 'Elasticsearch: Node is unreachable'
+        priority: HIGH
+        description: 'The HTTP API of this node does not answer: service stopped, network flow cut or credentials rejected.'
+        tags:
+        - tag: scope
+          value: availability
+      - uuid: 3079272c388a4cbbb165fe67de71784f
+        expression: max(/SOC Elasticsearch node by HTTP/es.node.status,{$ELASTICSEARCH.NODE.STATUS.DELAY})=1
+        name: 'Elasticsearch: Node is out of the cluster'
+        priority: HIGH
+        description: 'The service answers but the node sees no master: it has not joined the cluster.'
+        tags:
+        - tag: scope
+          value: availability
+    - uuid: 70214a2dcfa74b1aa9cf361c4b504b70
+      name: 'ES: Get node stats'
+      type: HTTP_AGENT
+      key: es.node.get_stats
+      history: '0'
+      value_type: TEXT
+      authtype: BASIC
+      username: '{$ELASTICSEARCH.USERNAME}'
+      password: '{$ELASTICSEARCH.PASSWORD}'
+      description: Returns the statistics of this node only (_local).
+      timeout: 30s
+      url: '{$ELASTICSEARCH.SCHEME}://{HOST.CONN}:{$ELASTICSEARCH.PORT}/_nodes/_local/stats?filter_path=nodes.*.name,nodes.*.roles,nodes.*.os.cpu.percent,nodes.*.fs.total.*,nodes.*.jvm.uptime_in_millis,nodes.*.jvm.mem.heap*,nodes.*.indices.*,nodes.*.thread_pool.*,nodes.*.http.current_open,nodes.*.http.total_opened'
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 98edba7a5d214e9fa82bb6f4b53e2e50
+      name: 'ES: Roles'
+      type: DEPENDENT
+      key: es.node.roles
+      value_type: CHAR
+      description: Roles of this node (master, data_hot, ml, ingest...).
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..roles.first()
+      - type: JAVASCRIPT
+        parameters:
+        - return JSON.parse(value).join(", ");
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: info
+    - uuid: 7e37114975b64dfdbeb3ee65c1a6886f
+      name: 'ES: CPU utilization'
+      type: DEPENDENT
+      key: es.node.os.cpu.percent
+      units: '%'
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..os.cpu.percent.first()
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: c83fa635a6fd4467ab589e036f142265
+      name: 'ES: Free space in percent'
+      type: DEPENDENT
+      key: es.node.fs.total.free_percent
+      value_type: FLOAT
+      units: '%'
+      description: Available space on the Elasticsearch data paths of this node.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..fs.total.first()
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var fs = JSON.parse(value);
+          if (!fs.total_in_bytes) {
+              throw 'total size is unknown';
+          }
+          return Math.round(fs.available_in_bytes / fs.total_in_bytes * 10000) / 100;
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: storage
+      triggers:
+      - uuid: 7295dc2921454aea9e3611d2a99b4127
+        expression: max(/SOC Elasticsearch node by HTTP/es.node.fs.total.free_percent,15m)<{$ELASTICSEARCH.FS.FREE.MIN.CRIT}
+        name: 'Elasticsearch: Free disk space is critically low'
+        priority: HIGH
+        opdata: 'Free: {ITEM.LASTVALUE1}'
+        description: Below the high watermark Elasticsearch relocates shards away from this node.
+        tags:
+        - tag: scope
+          value: capacity
+      - uuid: 8f7160633d3c4840828505ea0c88cf3e
+        expression: max(/SOC Elasticsearch node by HTTP/es.node.fs.total.free_percent,15m)<{$ELASTICSEARCH.FS.FREE.MIN.WARN}
+        name: 'Elasticsearch: Free disk space is low'
+        priority: WARNING
+        opdata: 'Free: {ITEM.LASTVALUE1}'
+        description: Below the low watermark Elasticsearch stops allocating new shards to this node.
+        dependencies:
+        - name: 'Elasticsearch: Free disk space is critically low'
+          expression: max(/SOC Elasticsearch node by HTTP/es.node.fs.total.free_percent,15m)<{$ELASTICSEARCH.FS.FREE.MIN.CRIT}
+        tags:
+        - tag: scope
+          value: capacity
+    - uuid: 82607a92b22848e194fe4ec26fc9dc4f
+      name: 'ES: Total available size'
+      type: DEPENDENT
+      key: es.node.fs.total.available_in_bytes
+      units: B
+      description: |
+        The total number of bytes available to this Java virtual machine on all file stores.
+        Depending on OS or process level restrictions, this might appear less than fs.total.free_in_bytes.
+        This is the actual amount of free disk space the Elasticsearch node can utilize.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..fs.total.available_in_bytes.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: storage
+    - uuid: 35c199f60e84407dba3c79ccb25ce56e
+      name: 'ES: Total size'
+      type: DEPENDENT
+      key: es.node.fs.total.total_in_bytes
+      units: B
+      description: Total size (in bytes) of all file stores.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..fs.total.total_in_bytes.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: storage
+    - uuid: 273bf316cb8f46f49112bf89dc3aa9ed
+      name: 'ES: Number of open HTTP connections'
+      type: DEPENDENT
+      key: es.node.http.current_open
+      description: The number of currently open HTTP connections for the node.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..http.current_open.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: connections
+    - uuid: 6945f7856bf048b9b62c58b55f70879d
+      name: 'ES: Rate of HTTP connections opened'
+      type: DEPENDENT
+      key: es.node.http.opened.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of HTTP connections opened for the node per second.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..http.total_opened.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: connections
+    - uuid: a21d05d2a39d4a06aa6a75c20ba08497
+      name: 'ES: Flush latency'
+      type: CALCULATED
+      key: es.node.indices.flush.latency
+      value_type: FLOAT
+      units: '!ms'
+      params: change(//es.node.indices.flush.total_time_in_millis) / (change(//es.node.indices.flush.total) + (change(//es.node.indices.flush.total) = 0) )
+      description: |
+        The average flush latency calculated from the available flush.total and flush.total_time_in_millis metrics.
+        If the calculated value cannot be evaluated due to missing historical data, the item returns '-1', indicating that there is not enough data to calculate the metric yet.
+      valuemap:
+        name: Missing data condition
+      preprocessing:
+      - type: CHECK_NOT_SUPPORTED
+        parameters:
+        - '-1'
+        error_handler: CUSTOM_VALUE
+        error_handler_params: '-1'
+      tags:
+      - tag: component
+        value: operations
+      triggers:
+      - uuid: b577dfe9595c47c79e9ce4d4aff6f1b6
+        expression: min(/SOC Elasticsearch node by HTTP/es.node.indices.flush.latency,5m)>{$ELASTICSEARCH.FLUSH_LATENCY.MAX.WARN}
+        name: 'Elasticsearch: Flush latency is too high'
+        event_name: 'Elasticsearch: Flush latency is too high (over {$ELASTICSEARCH.FLUSH_LATENCY.MAX.WARN}ms for 5m)'
+        priority: WARNING
+        description: |
+          If you see this metric increasing steadily, it may indicate a problem with slow disks; this problem may escalate
+          and eventually prevent you from being able to add new information to your index.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 8989743537e541ccac985633bc24be50
+      name: 'ES: Total number of index flushes to disk'
+      type: DEPENDENT
+      key: es.node.indices.flush.total
+      description: The total number of flush operations.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.flush.total.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: 450f15d0b1ed459c9eb3ada9bc534be3
+      name: 'ES: Total time spent on flushing indices to disk'
+      type: DEPENDENT
+      key: es.node.indices.flush.total_time_in_millis
+      units: '!ms'
+      description: Total time in milliseconds spent performing flush operations.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.flush.total_time_in_millis.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: 0bbe164acb214d7797d34a0153772a32
+      name: 'ES: Current indexing operations'
+      type: DEPENDENT
+      key: es.node.indices.indexing.index_current
+      description: The number of indexing operations currently running.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.indexing.index_current.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: 2a122010796e4ac681aa7e293fceb6e9
+      name: 'ES: Indexing latency'
+      type: CALCULATED
+      key: es.node.indices.indexing.index_latency
+      value_type: FLOAT
+      units: '!ms'
+      params: change(//es.node.indices.indexing.index_time_in_millis) / (change(//es.node.indices.indexing.index_total) + (change(//es.node.indices.indexing.index_total) = 0) )
+      description: |
+        The average indexing latency calculated from the available index_total and index_time_in_millis metrics.
+        If the calculated value cannot be evaluated due to missing historical data, the item returns '-1', indicating that there is not enough data to calculate the metric yet.
+      valuemap:
+        name: Missing data condition
+      preprocessing:
+      - type: CHECK_NOT_SUPPORTED
+        parameters:
+        - '-1'
+        error_handler: CUSTOM_VALUE
+        error_handler_params: '-1'
+      tags:
+      - tag: component
+        value: operations
+      triggers:
+      - uuid: 4f473a9c3a8948578680dc892a508a75
+        expression: min(/SOC Elasticsearch node by HTTP/es.node.indices.indexing.index_latency,5m)>{$ELASTICSEARCH.INDEXING_LATENCY.MAX.WARN}
+        name: 'Elasticsearch: Indexing latency is too high'
+        event_name: 'Elasticsearch: Indexing latency is too high (over {$ELASTICSEARCH.INDEXING_LATENCY.MAX.WARN}ms for 5m)'
+        priority: WARNING
+        description: |
+          If the latency is increasing, it may indicate that you are indexing too many documents at the same time (Elasticsearch's documentation
+          recommends starting with a bulk indexing size of 5 to 15 megabytes and increasing slowly from there).
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 0190c900a1544dc8b697af61dadcee98
+      name: 'ES: Total time spent performing indexing'
+      type: DEPENDENT
+      key: es.node.indices.indexing.index_time_in_millis
+      units: '!ms'
+      description: Total time in milliseconds spent performing indexing operations.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.indexing.index_time_in_millis.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: 1c1f2b71a7944009b038459193c93254
+      name: 'ES: Total number of indexing'
+      type: DEPENDENT
+      key: es.node.indices.indexing.index_total
+      description: The total number of indexing operations.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.indexing.index_total.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: e71bb0fa012e4eabaf3ac4f4f2c81a5f
+      name: 'ES: Time spent throttling operations'
+      type: DEPENDENT
+      key: es.node.indices.indexing.throttle_time
+      value_type: FLOAT
+      units: s
+      description: Time in seconds spent throttling operations for the last measuring span.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.indexing.throttle_time_in_millis.first()
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      - type: SIMPLE_CHANGE
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: e7be948049124220a9af938504b7bb72
+      name: 'ES: Time spent throttling merge operations'
+      type: DEPENDENT
+      key: es.node.indices.merges.total_throttled_time
+      value_type: FLOAT
+      units: s
+      description: Time in seconds spent throttling merge operations for the last measuring span.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.merges.total_throttled_time_in_millis.first()
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      - type: SIMPLE_CHANGE
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: b230378104824d4cb22d757e594f2a5e
+      name: 'ES: Time spent throttling recovery operations'
+      type: DEPENDENT
+      key: es.node.indices.recovery.throttle_time
+      value_type: FLOAT
+      units: s
+      description: Time in seconds spent throttling recovery operations for the last measuring span.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.recovery.throttle_time_in_millis.first()
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      - type: SIMPLE_CHANGE
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: b3391b14060a47e494a535149100d200
+      name: 'ES: Rate of index refreshes'
+      type: DEPENDENT
+      key: es.node.indices.refresh.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of refresh operations per second.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.refresh.total.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: 2d1b4d81a9ae49299dd15c7d629fa60a
+      name: 'ES: Time spent performing refresh'
+      type: DEPENDENT
+      key: es.node.indices.refresh.time
+      value_type: FLOAT
+      units: s
+      description: Time in seconds spent performing refresh operations for the last measuring span.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.refresh.total_time_in_millis.first()
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      - type: SIMPLE_CHANGE
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: operations
+    - uuid: b804f9552cfe46b6ac566073d5806904
+      name: 'ES: Rate of fetch'
+      type: DEPENDENT
+      key: es.node.indices.search.fetch.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of fetch operations per second.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.fetch_total.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: fetches
+    - uuid: 0839c98457654abb8fa356719ba9b4f3
+      name: 'ES: Current fetch operations'
+      type: DEPENDENT
+      key: es.node.indices.search.fetch_current
+      description: The number of fetch operations currently running.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.fetch_current.first()
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: fetches
+    - uuid: 18717a5aa05c42d392720d9c047ec606
+      name: 'ES: Fetch latency'
+      type: CALCULATED
+      key: es.node.indices.search.fetch_latency
+      value_type: FLOAT
+      units: '!ms'
+      params: change(//es.node.indices.search.fetch_time_in_millis) / (change(//es.node.indices.search.fetch_total) + (change(//es.node.indices.search.fetch_total) = 0) )
+      description: |
+        The average fetch latency calculated by sampling the total number of fetches and the total elapsed time at regular intervals.
+        If the calculated value cannot be evaluated due to missing historical data, the item returns '-1', indicating that there is not enough data to calculate the metric yet.
+      valuemap:
+        name: Missing data condition
+      preprocessing:
+      - type: CHECK_NOT_SUPPORTED
+        parameters:
+        - '-1'
+        error_handler: CUSTOM_VALUE
+        error_handler_params: '-1'
+      tags:
+      - tag: component
+        value: fetches
+      triggers:
+      - uuid: 7e933a6ea5e04162912ddb3136142799
+        expression: min(/SOC Elasticsearch node by HTTP/es.node.indices.search.fetch_latency,5m)>{$ELASTICSEARCH.FETCH_LATENCY.MAX.WARN}
+        name: 'Elasticsearch: Fetch latency is too high'
+        event_name: 'Elasticsearch: Fetch latency is too high (over {$ELASTICSEARCH.FETCH_LATENCY.MAX.WARN}ms for 5m)'
+        priority: WARNING
+        description: |
+          The fetch phase should typically take much less time than the query phase. If you notice this metric consistently increasing,
+          this could indicate a problem with slow disks, enriching of documents (highlighting the relevant text in search results, etc.),
+          or requesting too many results.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 2d928cf8892d4860860f9d8b68678829
+      name: 'ES: Time spent performing fetch'
+      type: DEPENDENT
+      key: es.node.indices.search.fetch_time
+      value_type: FLOAT
+      units: s
+      description: Time in seconds spent performing fetch operations for the last measuring span.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.fetch_time_in_millis.first()
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      - type: SIMPLE_CHANGE
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: fetches
+    - uuid: 676d74c643204eea92aeb3b696766377
+      name: 'ES: Total time spent performing fetch'
+      type: DEPENDENT
+      key: es.node.indices.search.fetch_time_in_millis
+      units: '!ms'
+      description: Time in milliseconds spent performing fetch operations.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.fetch_time_in_millis.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: fetches
+    - uuid: a002628b79744e6c8fbaea808bdea07c
+      name: 'ES: Total number of fetch'
+      type: DEPENDENT
+      key: es.node.indices.search.fetch_total
+      description: The total number of fetch operations.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.fetch_total.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: fetches
+    - uuid: 06edb588ac764fe795335882c6e44e46
+      name: 'ES: Rate of queries'
+      type: DEPENDENT
+      key: es.node.indices.search.query.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of query operations per second.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.query_total.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: queries
+    - uuid: b2462975c69d4d0ba9ecdad7286b263c
+      name: 'ES: Current query operations'
+      type: DEPENDENT
+      key: es.node.indices.search.query_current
+      description: The number of query operations currently running.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.query_current.first()
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: queries
+    - uuid: 818f234afcfe4718be5463025dc8ff85
+      name: 'ES: Query latency'
+      type: CALCULATED
+      key: es.node.indices.search.query_latency
+      value_type: FLOAT
+      units: '!ms'
+      params: change(//es.node.indices.search.query_time_in_millis) / (change(//es.node.indices.search.query_total) + (change(//es.node.indices.search.query_total) = 0) )
+      description: |
+        The average query latency calculated by sampling the total number of queries and the total elapsed time at regular intervals.
+        If the calculated value cannot be evaluated due to missing historical data, the item returns '-1', indicating that there is not enough data to calculate the metric yet.
+      valuemap:
+        name: Missing data condition
+      preprocessing:
+      - type: CHECK_NOT_SUPPORTED
+        parameters:
+        - '-1'
+        error_handler: CUSTOM_VALUE
+        error_handler_params: '-1'
+      tags:
+      - tag: component
+        value: queries
+      triggers:
+      - uuid: e0ef1d985d26484eba628c0ee9817385
+        expression: min(/SOC Elasticsearch node by HTTP/es.node.indices.search.query_latency,5m)>{$ELASTICSEARCH.QUERY_LATENCY.MAX.WARN}
+        name: 'Elasticsearch: Query latency is too high'
+        event_name: 'Elasticsearch: Query latency is too high (over {$ELASTICSEARCH.QUERY_LATENCY.MAX.WARN}ms for 5m)'
+        priority: WARNING
+        description: If latency exceeds a threshold, look for potential resource bottlenecks, or investigate whether you need to optimize your queries.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 80fc28bc71af4c289ac890465dc7a918
+      name: 'ES: Time spent performing query'
+      type: DEPENDENT
+      key: es.node.indices.search.query_time
+      value_type: FLOAT
+      units: s
+      description: Time in seconds spent performing query operations for the last measuring span.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.query_time_in_millis.first()
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      - type: SIMPLE_CHANGE
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: queries
+    - uuid: 9a479964850a48c7a4103e0a1f402d5b
+      name: 'ES: Total time spent performing query'
+      type: DEPENDENT
+      key: es.node.indices.search.query_time_in_millis
+      units: '!ms'
+      description: Time in milliseconds spent performing query operations.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.query_time_in_millis.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: queries
+    - uuid: 0fe5f8dc4b8e49cfa6b28a146ee80042
+      name: 'ES: Total number of query'
+      type: DEPENDENT
+      key: es.node.indices.search.query_total
+      description: The total number of query operations.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..indices.search.query_total.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: queries
+    - uuid: a5393e85ef48416997c896d961183f2e
+      name: 'ES: Amount of JVM heap committed'
+      type: DEPENDENT
+      key: es.node.jvm.mem.heap_committed_in_bytes
+      units: B
+      description: The amount of memory, in bytes, available for use by the heap.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..jvm.mem.heap_committed_in_bytes.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: memory
+    - uuid: 3452de5b6fb84311897f782f54b10b52
+      name: 'ES: Maximum JVM memory available for use'
+      type: DEPENDENT
+      key: es.node.jvm.mem.heap_max_in_bytes
+      units: B
+      description: The maximum amount of memory, in bytes, available for use by the heap.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..jvm.mem.heap_max_in_bytes.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: memory
+    - uuid: 68c68f54b60247bda229be7908d11d95
+      name: 'ES: Amount of JVM heap currently in use'
+      type: DEPENDENT
+      key: es.node.jvm.mem.heap_used_in_bytes
+      units: B
+      description: The memory, in bytes, currently in use by the heap.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..jvm.mem.heap_used_in_bytes.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: memory
+    - uuid: 785a3d7f657a4d2ba26516af42900eeb
+      name: 'ES: Percent of JVM heap currently in use'
+      type: DEPENDENT
+      key: es.node.jvm.mem.heap_used_percent
+      value_type: FLOAT
+      units: '%'
+      description: The percentage of memory currently in use by the heap.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..jvm.mem.heap_used_percent.first()
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: memory
+      triggers:
+      - uuid: 08e984cb2f09410dadb5c8b01ace0dd3
+        expression: min(/SOC Elasticsearch node by HTTP/es.node.jvm.mem.heap_used_percent,1h)>{$ELASTICSEARCH.HEAP_USED.MAX.CRIT}
+        name: 'Elasticsearch: Percent of JVM heap in use is critical'
+        event_name: 'Elasticsearch: Percent of JVM heap in use is critical (over {$ELASTICSEARCH.HEAP_USED.MAX.CRIT}% for 1h)'
+        priority: HIGH
+        description: |
+          This indicates that the rate of garbage collection isn't keeping up with the rate of garbage creation.
+          To address this problem, you can either increase your heap size (as long as it remains below the recommended
+          guidelines stated above), or scale out the cluster by adding more nodes.
+        tags:
+        - tag: scope
+          value: performance
+      - uuid: f6f2656579374aecb64419cbced7688a
+        expression: min(/SOC Elasticsearch node by HTTP/es.node.jvm.mem.heap_used_percent,1h)>{$ELASTICSEARCH.HEAP_USED.MAX.WARN}
+        name: 'Elasticsearch: Percent of JVM heap in use is high'
+        event_name: 'Elasticsearch: Percent of JVM heap in use is high (over {$ELASTICSEARCH.HEAP_USED.MAX.WARN}% for 1h)'
+        priority: WARNING
+        description: |
+          This indicates that the rate of garbage collection isn't keeping up with the rate of garbage creation.
+          To address this problem, you can either increase your heap size (as long as it remains below the recommended
+          guidelines stated above), or scale out the cluster by adding more nodes.
+        dependencies:
+        - name: 'Elasticsearch: Percent of JVM heap in use is critical'
+          expression: min(/SOC Elasticsearch node by HTTP/es.node.jvm.mem.heap_used_percent,1h)>{$ELASTICSEARCH.HEAP_USED.MAX.CRIT}
+        tags:
+        - tag: scope
+          value: performance
+    - uuid: cc2a7db063264ee29373a13b14fffdf2
+      name: 'ES: Node uptime'
+      type: DEPENDENT
+      key: es.node.jvm.uptime
+      value_type: FLOAT
+      units: s
+      description: JVM uptime in seconds.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..jvm.uptime_in_millis.first()
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: system
+      triggers:
+      - uuid: 57906862fe7c497ea282f97bc63cc5c4
+        expression: last(/SOC Elasticsearch node by HTTP/es.node.jvm.uptime)<10m
+        name: 'Elasticsearch: Node has been restarted'
+        event_name: 'Elasticsearch: Node has been restarted (uptime < 10m)'
+        priority: INFO
+        description: Uptime is less than 10 minutes.
+        manual_close: 'YES'
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: cfc6da15a1e64d808af2c203608617c3
+      name: 'ES: Refresh thread pool active threads'
+      type: DEPENDENT
+      key: es.node.thread_pool.refresh.active
+      description: The number of active threads in the refresh thread pool.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.refresh.active.first()
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: refresh-thread-pool
+    - uuid: 300296d6eaa44cb7a4a157d3ddef368b
+      name: 'ES: Refresh thread pool executor tasks completed'
+      type: DEPENDENT
+      key: es.node.thread_pool.refresh.completed.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of tasks completed by the refresh thread pool executor.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.refresh.completed.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: refresh-thread-pool
+    - uuid: 8a293c06cae04bd6bee79c83be28e105
+      name: 'ES: Refresh thread pool tasks in queue'
+      type: DEPENDENT
+      key: es.node.thread_pool.refresh.queue
+      description: The number of tasks in queue for the refresh thread pool.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.refresh.queue.first()
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: refresh-thread-pool
+    - uuid: bacf6521356a4174b7ac4deb7c3d12e4
+      name: 'ES: Refresh thread pool executor tasks rejected'
+      type: DEPENDENT
+      key: es.node.thread_pool.refresh.rejected.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of tasks rejected by the refresh thread pool executor.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.refresh.rejected.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: refresh-thread-pool
+      triggers:
+      - uuid: 46a520bebfee489da5f635f79a25ec2f
+        expression: min(/SOC Elasticsearch node by HTTP/es.node.thread_pool.refresh.rejected.rate,5m)>0
+        name: 'Elasticsearch: Refresh thread pool executor has the rejected tasks'
+        event_name: 'Elasticsearch: Refresh thread pool executor has the rejected tasks (for 5m)'
+        priority: WARNING
+        description: The number of tasks rejected by the refresh thread pool executor is over 0 for 5m.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: c02ca496f0f5430aa5fb4744fd0871a8
+      name: 'ES: Search thread pool active threads'
+      type: DEPENDENT
+      key: es.node.thread_pool.search.active
+      description: The number of active threads in the search thread pool.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.search.active.first()
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: search-thread-pool
+    - uuid: 772f4367ea3b4482a3082a0f3835310b
+      name: 'ES: Search thread pool executor tasks completed'
+      type: DEPENDENT
+      key: es.node.thread_pool.search.completed.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of tasks completed by the search thread pool executor.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.search.completed.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: search-thread-pool
+    - uuid: c66af1a037594f448c93ef53c2eaeadb
+      name: 'ES: Search thread pool tasks in queue'
+      type: DEPENDENT
+      key: es.node.thread_pool.search.queue
+      description: The number of tasks in queue for the search thread pool.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.search.queue.first()
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: search-thread-pool
+    - uuid: 30f7d62a9c7945b39bdfb9b7176828e3
+      name: 'ES: Search thread pool executor tasks rejected'
+      type: DEPENDENT
+      key: es.node.thread_pool.search.rejected.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of tasks rejected by the search thread pool executor.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.search.rejected.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: search-thread-pool
+      triggers:
+      - uuid: 4b8d8c69365143f8bfb5f6c9fb8b9b00
+        expression: min(/SOC Elasticsearch node by HTTP/es.node.thread_pool.search.rejected.rate,5m)>0
+        name: 'Elasticsearch: Search thread pool executor has the rejected tasks'
+        event_name: 'Elasticsearch: Search thread pool executor has the rejected tasks (for 5m)'
+        priority: WARNING
+        description: The number of tasks rejected by the search thread pool executor is over 0 for 5m.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 70c0d8d4560d4c1b9e7f1a7f0a78877a
+      name: 'ES: Write thread pool active threads'
+      type: DEPENDENT
+      key: es.node.thread_pool.write.active
+      description: The number of active threads in the write thread pool.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.write.active.first()
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: write-thread-pool
+    - uuid: 15e546c50d154f8da9911864f6689057
+      name: 'ES: Write thread pool executor tasks completed'
+      type: DEPENDENT
+      key: es.node.thread_pool.write.completed.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of tasks completed by the write thread pool executor.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.write.completed.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: write-thread-pool
+    - uuid: 08403ea4b4964259b2b5ecaef96c3dc5
+      name: 'ES: Write thread pool tasks in queue'
+      type: DEPENDENT
+      key: es.node.thread_pool.write.queue
+      description: The number of tasks in queue for the write thread pool.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.write.queue.first()
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: write-thread-pool
+    - uuid: 75ea380b05e147b98c3c4dc869f49744
+      name: 'ES: Write thread pool executor tasks rejected'
+      type: DEPENDENT
+      key: es.node.thread_pool.write.rejected.rate
+      value_type: FLOAT
+      units: '!rps'
+      description: The number of tasks rejected by the write thread pool executor.
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $..thread_pool.write.rejected.first()
+      - type: CHANGE_PER_SECOND
+      master_item:
+        key: es.node.get_stats
+      tags:
+      - tag: component
+        value: write-thread-pool
+      triggers:
+      - uuid: 11639c4d23134580b177cfa0e0945297
+        expression: min(/SOC Elasticsearch node by HTTP/es.node.thread_pool.write.rejected.rate,5m)>0
+        name: 'Elasticsearch: Write thread pool executor has the rejected tasks'
+        event_name: 'Elasticsearch: Write thread pool executor has the rejected tasks (for 5m)'
+        priority: WARNING
+        description: The number of tasks rejected by the write thread pool executor is over 0 for 5m.
+        tags:
+        - tag: scope
+          value: notice
+    tags:
+    - tag: class
+      value: database
+    - tag: target
+      value: elasticsearch
+    macros:
+    - macro: '{$ELASTICSEARCH.FETCH_LATENCY.MAX.WARN}'
+      value: '100'
+      description: Maximum of fetch latency in milliseconds for trigger expression.
+    - macro: '{$ELASTICSEARCH.FLUSH_LATENCY.MAX.WARN}'
+      value: '100'
+      description: Maximum of flush latency in milliseconds for trigger expression.
+    - macro: '{$ELASTICSEARCH.FS.FREE.MIN.CRIT}'
+      value: '10'
+      description: Critical threshold of free disk space on the data paths, in %.
+    - macro: '{$ELASTICSEARCH.FS.FREE.MIN.WARN}'
+      value: '15'
+      description: Warning threshold of free disk space on the data paths, in %.
+    - macro: '{$ELASTICSEARCH.HEAP_USED.MAX.CRIT}'
+      value: '95'
+      description: The maximum percent in the use of JVM heap for critically trigger expression.
+    - macro: '{$ELASTICSEARCH.HEAP_USED.MAX.WARN}'
+      value: '85'
+      description: The maximum percent in the use of JVM heap for warning trigger expression.
+    - macro: '{$ELASTICSEARCH.INDEXING_LATENCY.MAX.WARN}'
+      value: '100'
+      description: Maximum of indexing latency in milliseconds for trigger expression.
+    - macro: '{$ELASTICSEARCH.NODE.STATUS.DELAY}'
+      value: 3m
+      description: How long the node status must stay degraded before a problem is raised.
+    - macro: '{$ELASTICSEARCH.PASSWORD}'
+      type: SECRET_TEXT
+      description: Elasticsearch password.
+    - macro: '{$ELASTICSEARCH.PORT}'
+      value: '9200'
+      description: Elasticsearch port.
+    - macro: '{$ELASTICSEARCH.QUERY_LATENCY.MAX.WARN}'
+      value: '100'
+      description: Maximum of query latency in milliseconds for trigger expression.
+    - macro: '{$ELASTICSEARCH.SCHEME}'
+      value: http
+      description: Elasticsearch HTTP scheme.
+    - macro: '{$ELASTICSEARCH.USERNAME}'
+      description: Elasticsearch username.
+    valuemaps:
+    - uuid: a74d20323be04ec7a8306ab90a488abc
+      name: ES yes/no
+      mappings:
+      - value: '0'
+        newvalue: 'No'
+      - value: '1'
+        newvalue: 'Yes'
+    - uuid: 7c9f3509f49842efbc853c404a0a5d46
+      name: ES node status
+      mappings:
+      - value: '0'
+        newvalue: Unreachable
+      - value: '1'
+        newvalue: Out of cluster
+      - value: '2'
+        newvalue: OK
+    - uuid: 7f043e927c474efd8b62b70fa533ef0e
+      name: Missing data condition
+      mappings:
+      - value: '-1'
+        newvalue: Not enough data
+  graphs:
+  - uuid: a0dadc9057c84711919b3a4e397cb36e
+    name: 'ES: Latency'
+    graph_items:
+    - color: 199C0D
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.indices.search.query_latency
+    - sortorder: '1'
+      color: F63100
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.indices.indexing.index_latency
+    - sortorder: '2'
+      color: 00611C
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.indices.search.fetch_latency
+    - sortorder: '3'
+      color: F7941D
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.indices.flush.latency
+  - uuid: 7119763d98b147f8b1a9447dbb033c8b
+    name: 'ES: Query load'
+    graph_items:
+    - color: 199C0D
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.indices.search.fetch_current
+    - sortorder: '1'
+      color: F63100
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.indices.search.query_current
+  - uuid: 96e2934ffd144ebea02106b1c07d8a7c
+    name: 'ES: Refresh thread pool'
+    graph_items:
+    - color: 199C0D
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.refresh.active
+    - sortorder: '1'
+      color: F63100
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.refresh.queue
+    - sortorder: '2'
+      color: 00611C
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.refresh.completed.rate
+    - sortorder: '3'
+      color: F7941D
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.refresh.rejected.rate
+  - uuid: 2d3f32a040cd47caada3b34244467f0b
+    name: 'ES: Search thread pool'
+    graph_items:
+    - color: 199C0D
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.search.active
+    - sortorder: '1'
+      color: F63100
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.search.queue
+    - sortorder: '2'
+      color: 00611C
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.search.completed.rate
+    - sortorder: '3'
+      color: F7941D
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.search.rejected.rate
+  - uuid: 6fed1469b8a343aab0f36350971ba732
+    name: 'ES: Write thread pool'
+    graph_items:
+    - color: 199C0D
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.write.active
+    - sortorder: '1'
+      color: F63100
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.write.queue
+    - sortorder: '2'
+      color: 00611C
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.write.completed.rate
+    - sortorder: '3'
+      color: F7941D
+      item:
+        host: SOC Elasticsearch node by HTTP
+        key: es.node.thread_pool.write.rejected.rate
