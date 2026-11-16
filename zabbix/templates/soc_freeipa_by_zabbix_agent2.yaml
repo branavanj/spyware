@@ -1,0 +1,385 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+    - uuid: b6134a9989f04441a897b9b3f6839771
+      name: Templates/SOC
+  templates:
+    - uuid: 7de58113baf54ffca3f25af742f3796d
+      template: 'SOC FreeIPA by Zabbix agent 2'
+      name: 'SOC - FreeIPA par Zabbix agent 2'
+      description: |
+        Supervision d'un serveur FreeIPA (maître ou réplica) avec Zabbix agent 2 installé sur le serveur.
+
+        Ce qui est supervisé :
+        - services systemd FreeIPA (découverte automatique : ipa, dirsrv, krb5kdc, kadmin, httpd, pki-tomcatd, named, sssd...) ;
+        - ports locaux LDAP 389, LDAPS 636, Kerberos 88, kpasswd 464, HTTPS 443 ;
+        - certificat HTTPS du serveur (validité et date d'expiration) ;
+        - rapport ipa-healthcheck (réplication, certificats, DNS, topologie...).
+
+        Mise en œuvre :
+        1. Lier ce template à l'hôte du serveur FreeIPA (interface agent requise).
+        2. Renseigner {$IPA.FQDN} avec le nom complet du serveur (utilisé pour le contrôle du certificat).
+        3. Pour ipa-healthcheck : installer le paquet ipa-healthcheck, activer ipa-healthcheck.timer et
+           donner à l'utilisateur zabbix le droit de lire {$IPA.HEALTHCHECK.FILE}.
+        4. Adapter {$IPA.SERVICES.MATCHES} si un service listé n'est pas utilisé sur ce serveur
+           (ex. retirer named si le DNS intégré n'est pas configuré).
+
+        Pour l'interface web, lier en plus « SOC - Accès web par HTTP » avec {$WEB.URL} = https://<fqdn>/ipa/ui/
+        Pour le système, lier en plus « Linux by Zabbix agent ».
+      vendor:
+        name: SOC
+        version: 8.0-1
+      groups:
+        - name: Templates/SOC
+      items:
+        - uuid: 15dc74d871114553bdeee820f4191ecf
+          name: 'FreeIPA : port LDAP (389)'
+          key: 'net.tcp.service[ldap]'
+          description: 'État du service LDAP (389 Directory Server) en local.'
+          valuemap:
+            name: 'Service state'
+          tags:
+            - tag: component
+              value: ldap
+          triggers:
+            - uuid: e4bdf16e8776428eb722617205524663
+              expression: 'max(/SOC FreeIPA by Zabbix agent 2/net.tcp.service[ldap],#3)=0'
+              name: 'FreeIPA : LDAP (389) ne répond plus'
+              priority: HIGH
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: bcc023438a3a4cd28b78d279dd4ea227
+          name: 'FreeIPA : port LDAPS (636)'
+          key: 'net.tcp.service[tcp,,636]'
+          description: 'Ouverture du port LDAPS en local.'
+          valuemap:
+            name: 'Service state'
+          tags:
+            - tag: component
+              value: ldap
+          triggers:
+            - uuid: 5ca1aed4a18e437da060f0b27b52931f
+              expression: 'max(/SOC FreeIPA by Zabbix agent 2/net.tcp.service[tcp,,636],#3)=0'
+              name: 'FreeIPA : LDAPS (636) ne répond plus'
+              priority: HIGH
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 70a99276eee64f0484937e6c29ccd11c
+          name: 'FreeIPA : port Kerberos KDC (88)'
+          key: 'net.tcp.service[tcp,,88]'
+          description: 'Ouverture du port TCP du KDC Kerberos en local.'
+          valuemap:
+            name: 'Service state'
+          tags:
+            - tag: component
+              value: kerberos
+          triggers:
+            - uuid: 2a2c3b63f89841e494c6877e13e65e8b
+              expression: 'max(/SOC FreeIPA by Zabbix agent 2/net.tcp.service[tcp,,88],#3)=0'
+              name: 'FreeIPA : Kerberos KDC (88) ne répond plus'
+              priority: HIGH
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: eb28d3abb0794d6a96de0699b704902b
+          name: 'FreeIPA : port Kerberos kpasswd (464)'
+          key: 'net.tcp.service[tcp,,464]'
+          description: 'Ouverture du port TCP de changement de mot de passe Kerberos (kadmin) en local.'
+          valuemap:
+            name: 'Service state'
+          tags:
+            - tag: component
+              value: kerberos
+          triggers:
+            - uuid: 755c26d0821f4930971e066061fc1160
+              expression: 'max(/SOC FreeIPA by Zabbix agent 2/net.tcp.service[tcp,,464],#3)=0'
+              name: 'FreeIPA : Kerberos kpasswd (464) ne répond plus'
+              priority: AVERAGE
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 931d99fc6d524266858f41e2c9ad2d7d
+          name: 'FreeIPA : port HTTPS (443)'
+          key: 'net.tcp.service[https]'
+          description: 'État du service HTTPS (interface web et API FreeIPA) en local.'
+          valuemap:
+            name: 'Service state'
+          tags:
+            - tag: component
+              value: web
+          triggers:
+            - uuid: 8b4ff3df547f44c7920b42624b4e633c
+              expression: 'max(/SOC FreeIPA by Zabbix agent 2/net.tcp.service[https],#3)=0'
+              name: 'FreeIPA : HTTPS (443) ne répond plus'
+              priority: HIGH
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 0ec72ff4ab374346b152fa64f5d5e27b
+          name: 'FreeIPA : certificat HTTPS (données brutes)'
+          key: 'web.certificate.get[{$IPA.FQDN}]'
+          delay: 1h
+          history: '0'
+          value_type: TEXT
+          description: 'Détails et validation du certificat HTTPS du serveur FreeIPA. Nécessite {$IPA.FQDN}.'
+          tags:
+            - tag: component
+              value: certificate
+        - uuid: 68495080eb3e4d81bae7dff1055595ac
+          name: 'FreeIPA : certificat HTTPS, date d''expiration'
+          type: DEPENDENT
+          key: ipa.cert.not_after
+          units: unixtime
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.x509.not_after.timestamp
+          master_item:
+            key: 'web.certificate.get[{$IPA.FQDN}]'
+          tags:
+            - tag: component
+              value: certificate
+          triggers:
+            - uuid: e3a066f164d745c9b2e3ed721a0536c6
+              expression: '(last(/SOC FreeIPA by Zabbix agent 2/ipa.cert.not_after)-now())/86400<{$IPA.CERT.EXPIRY.WARN}'
+              name: 'FreeIPA : le certificat HTTPS expire bientôt'
+              event_name: 'FreeIPA : le certificat HTTPS expire dans moins de {$IPA.CERT.EXPIRY.WARN} jours'
+              opdata: 'Expire le {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'Vérifier le renouvellement automatique par certmonger (getcert list).'
+              tags:
+                - tag: scope
+                  value: notice
+        - uuid: 24c7d5f6ad8e422ca72ae45876a362f1
+          name: 'FreeIPA : certificat HTTPS, résultat de validation'
+          type: DEPENDENT
+          key: ipa.cert.validation
+          value_type: CHAR
+          description: 'valid, valid-but-self-signed ou invalid.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.result.value
+          master_item:
+            key: 'web.certificate.get[{$IPA.FQDN}]'
+          tags:
+            - tag: component
+              value: certificate
+          triggers:
+            - uuid: fb0142e0da2640588b4939ab906aa366
+              expression: 'last(/SOC FreeIPA by Zabbix agent 2/ipa.cert.validation)="invalid" and length(last(/SOC FreeIPA by Zabbix agent 2/ipa.cert.message))>0'
+              name: 'FreeIPA : certificat HTTPS invalide'
+              opdata: '{ITEM.LASTVALUE2}'
+              priority: HIGH
+              description: 'Certificat expiré, nom d''hôte incorrect ou autorité inconnue du serveur.'
+              tags:
+                - tag: scope
+                  value: security
+        - uuid: 6b66fe7057144c64b5390a279c55a528
+          name: 'FreeIPA : certificat HTTPS, message de validation'
+          type: DEPENDENT
+          key: ipa.cert.message
+          value_type: TEXT
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.result.message
+          master_item:
+            key: 'web.certificate.get[{$IPA.FQDN}]'
+          tags:
+            - tag: component
+              value: certificate
+        - uuid: 95102850ffa5473d91f6812c3bac59af
+          name: 'FreeIPA : rapport ipa-healthcheck (données brutes)'
+          key: 'vfs.file.contents[{$IPA.HEALTHCHECK.FILE}]'
+          delay: 1h
+          history: '0'
+          value_type: TEXT
+          description: |
+            Rapport JSON produit par ipa-healthcheck.timer.
+            L'utilisateur zabbix doit pouvoir lire le fichier.
+          tags:
+            - tag: component
+              value: healthcheck
+        - uuid: 15bb0ea039ac46ad96f13983cca5655a
+          name: 'FreeIPA : ipa-healthcheck, contrôles en erreur'
+          type: DEPENDENT
+          key: ipa.healthcheck.errors
+          description: 'Nombre de contrôles ipa-healthcheck en ERROR ou CRITICAL.'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  var n = 0;
+                  for (var i = 0; i < data.length; i++) {
+                      if (data[i].result === 'ERROR' || data[i].result === 'CRITICAL') {
+                          n++;
+                      }
+                  }
+                  return n;
+          master_item:
+            key: 'vfs.file.contents[{$IPA.HEALTHCHECK.FILE}]'
+          tags:
+            - tag: component
+              value: healthcheck
+          triggers:
+            - uuid: 87ac2b705895499bb58317ee80cc1334
+              expression: 'last(/SOC FreeIPA by Zabbix agent 2/ipa.healthcheck.errors)>0'
+              name: 'FreeIPA : ipa-healthcheck signale des erreurs'
+              opdata: '{ITEM.LASTVALUE1} contrôle(s) en erreur'
+              priority: HIGH
+              description: |
+                Au moins un contrôle ipa-healthcheck est en ERROR ou CRITICAL (réplication, certificats, DNS, etc.).
+                Le détail est dans l'item « ipa-healthcheck, détail des anomalies ».
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 8ba0e1e6223a493daf8a6ea1d9e30c2f
+          name: 'FreeIPA : ipa-healthcheck, contrôles en avertissement'
+          type: DEPENDENT
+          key: ipa.healthcheck.warnings
+          description: 'Nombre de contrôles ipa-healthcheck en WARNING.'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  var n = 0;
+                  for (var i = 0; i < data.length; i++) {
+                      if (data[i].result === 'WARNING') {
+                          n++;
+                      }
+                  }
+                  return n;
+          master_item:
+            key: 'vfs.file.contents[{$IPA.HEALTHCHECK.FILE}]'
+          tags:
+            - tag: component
+              value: healthcheck
+          triggers:
+            - uuid: 84c61366699e47948cf0171c01118340
+              expression: 'last(/SOC FreeIPA by Zabbix agent 2/ipa.healthcheck.warnings)>0'
+              name: 'FreeIPA : ipa-healthcheck signale des avertissements'
+              opdata: '{ITEM.LASTVALUE1} contrôle(s) en avertissement'
+              priority: WARNING
+              description: 'Le détail est dans l''item « ipa-healthcheck, détail des anomalies ».'
+              dependencies:
+                - name: 'FreeIPA : ipa-healthcheck signale des erreurs'
+                  expression: 'last(/SOC FreeIPA by Zabbix agent 2/ipa.healthcheck.errors)>0'
+              tags:
+                - tag: scope
+                  value: notice
+        - uuid: d5da7da535e54ec8bacc75e74fd649f9
+          name: 'FreeIPA : ipa-healthcheck, détail des anomalies'
+          type: DEPENDENT
+          key: ipa.healthcheck.details
+          value_type: TEXT
+          description: 'Liste des contrôles ipa-healthcheck qui ne sont pas en SUCCESS.'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  var lines = [];
+                  for (var i = 0; i < data.length; i++) {
+                      var r = data[i];
+                      if (r.result === 'SUCCESS') {
+                          continue;
+                      }
+                      var kw = r.kw || {};
+                      var detail = kw.msg || kw.error || kw.key || '';
+                      lines.push(r.result + ' ' + r.source + '.' + r.check + (detail ? ' : ' + detail : ''));
+                  }
+                  if (lines.length === 0) {
+                      return 'Aucune anomalie';
+                  }
+                  return lines.join('\n').substring(0, 4000);
+            - type: DISCARD_UNCHANGED_HEARTBEAT
+              parameters:
+                - 1d
+          master_item:
+            key: 'vfs.file.contents[{$IPA.HEALTHCHECK.FILE}]'
+          tags:
+            - tag: component
+              value: healthcheck
+        - uuid: 2a0a979370e74d128cd0dbfdd5484f0b
+          name: 'FreeIPA : ipa-healthcheck, date du dernier rapport'
+          key: 'vfs.file.time[{$IPA.HEALTHCHECK.FILE},modify]'
+          delay: 1h
+          units: unixtime
+          description: 'Date de dernière modification du rapport ipa-healthcheck.'
+          tags:
+            - tag: component
+              value: healthcheck
+          triggers:
+            - uuid: 5d65a8792ba2464ca597f48f142ca7bc
+              expression: 'now()-last(/SOC FreeIPA by Zabbix agent 2/vfs.file.time[{$IPA.HEALTHCHECK.FILE},modify])>{$IPA.HEALTHCHECK.MAX.AGE}'
+              name: 'FreeIPA : rapport ipa-healthcheck trop ancien'
+              opdata: 'Dernier rapport : {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'Le rapport n''est plus régénéré : vérifier ipa-healthcheck.timer.'
+              tags:
+                - tag: scope
+                  value: notice
+      discovery_rules:
+        - uuid: 1c9d7b5a3e2f4a6c8b0d1e2f3a4b5c6d
+          name: 'Découverte des services FreeIPA'
+          key: 'systemd.unit.discovery[service]'
+          delay: 1h
+          filter:
+            conditions:
+              - macro: '{#UNIT.NAME}'
+                value: '{$IPA.SERVICES.MATCHES}'
+          description: 'Découvre les unités systemd FreeIPA présentes sur le serveur.'
+          item_prototypes:
+            - uuid: 2d8e6c4b1a3f4b7d9c0e1f2a3b4c5d6e
+              name: 'FreeIPA : état du service {#UNIT.NAME}'
+              key: 'systemd.unit.info["{#UNIT.NAME}"]'
+              value_type: CHAR
+              description: 'ActiveState systemd : active, inactive, failed, activating...'
+              tags:
+                - tag: component
+                  value: service
+                - tag: service
+                  value: '{#UNIT.NAME}'
+              trigger_prototypes:
+                - uuid: 3e9f7d5c2b4a4c8eab1f203a4b5c6d7e
+                  expression: 'count(/SOC FreeIPA by Zabbix agent 2/systemd.unit.info["{#UNIT.NAME}"],#3,"ne","active")=3'
+                  name: 'FreeIPA : le service {#UNIT.NAME} n''est pas actif'
+                  opdata: 'État : {ITEM.LASTVALUE1}'
+                  priority: HIGH
+                  description: 'Le service n''est pas à l''état active depuis 3 relevés. Voir ipactl status.'
+                  tags:
+                    - tag: scope
+                      value: availability
+      tags:
+        - tag: class
+          value: application
+        - tag: target
+          value: freeipa
+      macros:
+        - macro: '{$IPA.CERT.EXPIRY.WARN}'
+          value: '21'
+          description: 'Nombre de jours avant expiration du certificat HTTPS déclenchant l''alerte.'
+        - macro: '{$IPA.FQDN}'
+          description: 'OBLIGATOIRE. Nom complet (FQDN) du serveur FreeIPA, ex. ipa01.exemple.fr'
+        - macro: '{$IPA.HEALTHCHECK.FILE}'
+          value: /var/log/ipa/healthcheck/healthcheck.log
+          description: 'Chemin du rapport JSON écrit par ipa-healthcheck.timer.'
+        - macro: '{$IPA.HEALTHCHECK.MAX.AGE}'
+          value: 2d
+          description: 'Âge maximal du rapport ipa-healthcheck avant alerte.'
+        - macro: '{$IPA.SERVICES.MATCHES}'
+          value: '^(ipa|dirsrv@.+|krb5kdc|kadmin|httpd|pki-tomcatd@.+|ipa-custodia|ipa-dnskeysyncd|named|sssd|certmonger|chronyd)\.service$'
+          description: 'Expression régulière des unités systemd à superviser.'
+      valuemaps:
+        - uuid: 4fa08e6d3c5b4d9fbc2031425364758f
+          name: 'Service state'
+          mappings:
+            - value: '0'
+              newvalue: Down
+            - value: '1'
+              newvalue: Up

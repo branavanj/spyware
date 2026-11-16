@@ -1,0 +1,92 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+    - uuid: b6134a9989f04441a897b9b3f6839771
+      name: Templates/SOC
+  templates:
+    - uuid: 0085394c09df4b85a50de80fd3b92709
+      template: 'SOC Web access by HTTP'
+      name: 'SOC - Accès web par HTTP'
+      description: |
+        Supervision générique d'un accès web (GLPI, GitLab, Kibana, FreeIPA UI, etc.) par scénario web.
+        Le contrôle est exécuté par le serveur Zabbix ou par le proxy qui supervise l'hôte : aucun agent n'est requis.
+
+        Mise en œuvre :
+        1. Créer un hôte par application web (ou réutiliser l'hôte du serveur).
+        2. Lier ce template.
+        3. Renseigner au minimum {$WEB.URL} sur l'hôte.
+        4. Conseillé : renseigner {$WEB.REQUIRED.STRING} avec un texte présent sur la page attendue
+           (sinon une page d'erreur renvoyée en 200 passe pour un succès).
+
+        Le certificat du site est vérifié (verify_peer / verify_host). Si le site utilise une AC interne,
+        elle doit être connue du serveur/proxy Zabbix (paramètre SSLCALocation ou magasin système).
+      vendor:
+        name: SOC
+        version: 8.0-1
+      groups:
+        - name: Templates/SOC
+      httptests:
+        - uuid: 88770af004684c3981c33807eeac0d14
+          name: 'Web access'
+          delay: '{$WEB.INTERVAL}'
+          attempts: '2'
+          verify_peer: 'YES'
+          verify_host: 'YES'
+          steps:
+            - name: Page
+              url: '{$WEB.URL}'
+              follow_redirects: 'YES'
+              timeout: '{$WEB.TIMEOUT}'
+              required: '{$WEB.REQUIRED.STRING}'
+              status_codes: '{$WEB.STATUS.CODES}'
+          tags:
+            - tag: component
+              value: web
+      tags:
+        - tag: class
+          value: application
+        - tag: target
+          value: web
+      macros:
+        - macro: '{$WEB.INTERVAL}'
+          value: 1m
+          description: 'Fréquence d''exécution du scénario web.'
+        - macro: '{$WEB.REQUIRED.STRING}'
+          description: 'Texte (expression régulière) qui doit être présent dans la page. Vide = non contrôlé.'
+        - macro: '{$WEB.RESPONSE.TIME.WARN}'
+          value: '3'
+          description: 'Seuil d''alerte sur le temps de réponse, en secondes.'
+        - macro: '{$WEB.STATUS.CODES}'
+          value: '200'
+          description: 'Codes HTTP acceptés après redirections (ex. 200 ou 200,401).'
+        - macro: '{$WEB.TIMEOUT}'
+          value: 15s
+          description: 'Délai maximal de réponse de la page.'
+        - macro: '{$WEB.URL}'
+          description: 'OBLIGATOIRE. URL complète à contrôler, ex. https://glpi.exemple.fr/'
+  triggers:
+    - uuid: 71818fa465f2442998d25e7ba6d57de7
+      expression: 'min(/SOC Web access by HTTP/web.test.fail[Web access],#3)>0 and length(last(/SOC Web access by HTTP/web.test.error[Web access]))>0'
+      name: 'Web : accès indisponible'
+      event_name: 'Web : accès indisponible ({$WEB.URL})'
+      opdata: 'Erreur : {ITEM.LASTVALUE2}'
+      priority: HIGH
+      description: |
+        Le scénario web a échoué 3 fois de suite (page injoignable, code HTTP inattendu,
+        texte attendu absent ou certificat refusé). Le détail est dans la donnée opérationnelle.
+      tags:
+        - tag: scope
+          value: availability
+    - uuid: 1097526a61284dbabac2e0f378b3f38f
+      expression: 'min(/SOC Web access by HTTP/web.test.time[Web access,Page,resp],5m)>{$WEB.RESPONSE.TIME.WARN}'
+      name: 'Web : temps de réponse élevé'
+      event_name: 'Web : temps de réponse élevé (> {$WEB.RESPONSE.TIME.WARN}s pendant 5m) ({$WEB.URL})'
+      opdata: 'Temps de réponse : {ITEM.LASTVALUE1}'
+      priority: WARNING
+      description: 'Le temps de réponse de la page dépasse le seuil depuis 5 minutes.'
+      dependencies:
+        - name: 'Web : accès indisponible'
+          expression: 'min(/SOC Web access by HTTP/web.test.fail[Web access],#3)>0 and length(last(/SOC Web access by HTTP/web.test.error[Web access]))>0'
+      tags:
+        - tag: scope
+          value: performance
