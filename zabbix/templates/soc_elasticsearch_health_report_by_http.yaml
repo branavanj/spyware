@@ -1,0 +1,288 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+  - uuid: b6134a9989f04441a897b9b3f6839771
+    name: Templates/SOC
+  templates:
+  - uuid: 0520e58c0bc74e5e837e4008c3d64ad9
+    template: SOC Elasticsearch health report by HTTP
+    name: SOC - Rapport de santé Elasticsearch par HTTP
+    description: |
+      Complément cluster du template officiel « Elasticsearch Cluster by HTTP ». À lier au MÊME hôte que l'officiel (un seul hôte représentant le cluster).
+      Requiert Elasticsearch 8.7 ou plus récent (API _health_report).
+
+      Ce que ce template ajoute :
+      - un statut green / yellow / red par indicateur du rapport de santé Elasticsearch (master stable, ILM, SLM, intégrité des dépôts de snapshots, capacité en shards...) avec la phrase d'explication d'Elasticsearch en donnée opérationnelle ;
+      - licence : statut, type, date d'expiration ;
+      - nom du master élu (sans alerte).
+
+      Pour ne pas doubler les alertes existantes, {$ELASTICSEARCH.HEALTH.INDICATOR.NOT_MATCHES} exclut par défaut :
+      - shards_availability : déjà couvert par « Health is YELLOW / RED » et les shards non assignés du template officiel ;
+      - disk : déjà couvert par les alertes disque par nœud de « SOC - Nœud Elasticsearch par HTTP ».
+
+      Un indicateur ne lève qu'une alerte à la fois (YELLOW ou RED), après {$ELASTICSEARCH.HEALTH.DELAY} dans cet état.
+      Les macros de connexion {$ELASTICSEARCH.*} sont celles du template officiel.
+    vendor:
+      name: SOC
+      version: 8.0-1
+    groups:
+    - name: Templates/SOC
+    items:
+    - uuid: 31f136f4a2a54cb4b8329275e7d3d628
+      name: 'ES: Get health report'
+      type: HTTP_AGENT
+      key: es.health.get
+      history: '0'
+      value_type: TEXT
+      authtype: BASIC
+      username: '{$ELASTICSEARCH.USERNAME}'
+      password: '{$ELASTICSEARCH.PASSWORD}'
+      description: Elasticsearch health report (available since Elasticsearch 8.7), without the expensive diagnosis part.
+      timeout: 30s
+      url: '{$ELASTICSEARCH.SCHEME}://{$ELASTICSEARCH.HOST}:{$ELASTICSEARCH.PORT}/_health_report?verbose=false'
+      tags:
+      - tag: component
+        value: raw
+    - uuid: f4d8a7fbb0c74ec79391dcc2a1e763a3
+      name: 'ES: Get license'
+      type: HTTP_AGENT
+      key: es.license.get
+      delay: 1h
+      history: '0'
+      value_type: TEXT
+      authtype: BASIC
+      username: '{$ELASTICSEARCH.USERNAME}'
+      password: '{$ELASTICSEARCH.PASSWORD}'
+      timeout: 15s
+      url: '{$ELASTICSEARCH.SCHEME}://{$ELASTICSEARCH.HOST}:{$ELASTICSEARCH.PORT}/_license'
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 1a8d8c50c10f462bb1fd46e2504cc148
+      name: 'ES: License status'
+      type: DEPENDENT
+      key: es.license.status
+      value_type: CHAR
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.license.status
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: es.license.get
+      tags:
+      - tag: component
+        value: license
+      triggers:
+      - uuid: b6cc1e4b8e064c859f779bd843b0119d
+        expression: last(/SOC Elasticsearch health report by HTTP/es.license.status)<>"active"
+        name: 'Elasticsearch: License is not active'
+        opdata: 'Status: {ITEM.LASTVALUE1}'
+        priority: HIGH
+        tags:
+        - tag: scope
+          value: availability
+    - uuid: b013111679094dbe9fd4db56122423f3
+      name: 'ES: License type'
+      type: DEPENDENT
+      key: es.license.type
+      value_type: CHAR
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.license.type
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: es.license.get
+      tags:
+      - tag: component
+        value: license
+    - uuid: a517b3e819b746499f1f229ece199b78
+      name: 'ES: License expiry date'
+      type: DEPENDENT
+      key: es.license.expiry
+      units: unixtime
+      description: 'Absent for a basic license, which never expires: the item then keeps no value.'
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.license.expiry_date_in_millis
+        error_handler: DISCARD_VALUE
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: es.license.get
+      tags:
+      - tag: component
+        value: license
+      triggers:
+      - uuid: 72fcee6033384bd794faf76414f5a7e3
+        expression: (last(/SOC Elasticsearch health report by HTTP/es.license.expiry)-now())/86400<{$ELASTICSEARCH.LICENSE.EXPIRY.WARN}
+        name: 'Elasticsearch: License expires soon'
+        event_name: 'Elasticsearch: License expires in less than {$ELASTICSEARCH.LICENSE.EXPIRY.WARN} days'
+        opdata: Expires on {ITEM.LASTVALUE1}
+        priority: WARNING
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: bd29a2085cb94122ae564c6a9a8b4529
+      name: 'ES: Elected master node'
+      type: HTTP_AGENT
+      key: es.master.node
+      delay: 5m
+      value_type: CHAR
+      authtype: BASIC
+      username: '{$ELASTICSEARCH.USERNAME}'
+      password: '{$ELASTICSEARCH.PASSWORD}'
+      description: 'Name of the currently elected master. No trigger: master stability is covered by the master_is_stable indicator.'
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $[0].node
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      timeout: 15s
+      url: '{$ELASTICSEARCH.SCHEME}://{$ELASTICSEARCH.HOST}:{$ELASTICSEARCH.PORT}/_cat/master?format=json'
+      tags:
+      - tag: component
+        value: master
+    discovery_rules:
+    - uuid: d2ea962e927e451b8a8dc5f00461a6e1
+      name: Health indicators discovery
+      type: DEPENDENT
+      key: es.health.discovery
+      delay: '0'
+      filter:
+        conditions:
+        - macro: '{#INDICATOR}'
+          value: '{$ELASTICSEARCH.HEALTH.INDICATOR.NOT_MATCHES}'
+          operator: NOT_MATCHES_REGEX
+      description: One entry per indicator of the health report. Indicators already covered by other templates are filtered out.
+      item_prototypes:
+      - uuid: 4bdff93967834c329e15efbf686986f2
+        name: 'ES health [{#INDICATOR}]: Status'
+        type: DEPENDENT
+        key: es.health.status["{#INDICATOR}"]
+        valuemap:
+          name: ES health status
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.indicators['{#INDICATOR}'].status
+        - type: JAVASCRIPT
+          parameters:
+          - |
+            var m = {green: 0, yellow: 1, red: 2};
+            return value in m ? m[value] : 3;
+        master_item:
+          key: es.health.get
+        tags:
+        - tag: component
+          value: health
+        - tag: indicator
+          value: '{#INDICATOR}'
+        trigger_prototypes:
+        - uuid: 26ce2609ce9749ef817d5fdf18cb1396
+          expression: min(/SOC Elasticsearch health report by HTTP/es.health.status["{#INDICATOR}"],{$ELASTICSEARCH.HEALTH.DELAY})=2 and length(last(/SOC Elasticsearch health report by HTTP/es.health.symptom["{#INDICATOR}"]))>0
+          name: 'Elasticsearch health: {#INDICATOR} is RED'
+          opdata: '{ITEM.LASTVALUE2}'
+          priority: HIGH
+          description: The health report indicator has been red for {$ELASTICSEARCH.HEALTH.DELAY}. The symptom is shown as operational data.
+          tags:
+          - tag: scope
+            value: availability
+        - uuid: 57b448164ecf4650a23ef0a7be125326
+          expression: min(/SOC Elasticsearch health report by HTTP/es.health.status["{#INDICATOR}"],{$ELASTICSEARCH.HEALTH.DELAY})=1 and length(last(/SOC Elasticsearch health report by HTTP/es.health.symptom["{#INDICATOR}"]))>0
+          name: 'Elasticsearch health: {#INDICATOR} is YELLOW'
+          opdata: '{ITEM.LASTVALUE2}'
+          priority: WARNING
+          description: The health report indicator has not been green for {$ELASTICSEARCH.HEALTH.DELAY}. The symptom is shown as operational data.
+          tags:
+          - tag: scope
+            value: availability
+      - uuid: 2cbdffe4bc2f4763a563015f2e9d57c6
+        name: 'ES health [{#INDICATOR}]: Symptom'
+        type: DEPENDENT
+        key: es.health.symptom["{#INDICATOR}"]
+        value_type: TEXT
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.indicators['{#INDICATOR}'].symptom
+        - type: DISCARD_UNCHANGED_HEARTBEAT
+          parameters:
+          - 1h
+        master_item:
+          key: es.health.get
+        tags:
+        - tag: component
+          value: health
+        - tag: indicator
+          value: '{#INDICATOR}'
+      master_item:
+        key: es.health.get
+      lld_macro_paths:
+      - lld_macro: '{#INDICATOR}'
+        path: $.name
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var ind = JSON.parse(value).indicators || {};
+          var out = [];
+          for (var k in ind) {
+              out.push({name: k});
+          }
+          return JSON.stringify(out);
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+    tags:
+    - tag: class
+      value: database
+    - tag: target
+      value: elasticsearch
+    macros:
+    - macro: '{$ELASTICSEARCH.HEALTH.DELAY}'
+      value: 10m
+      description: How long an indicator must stay yellow or red before a problem is raised.
+    - macro: '{$ELASTICSEARCH.HEALTH.INDICATOR.NOT_MATCHES}'
+      value: ^(shards_availability|disk)$
+      description: Indicators to ignore because other templates already alert on them.
+    - macro: '{$ELASTICSEARCH.HOST}'
+      description: Hostname or IP of the Elasticsearch endpoint (same macro as the official template).
+    - macro: '{$ELASTICSEARCH.LICENSE.EXPIRY.WARN}'
+      value: '30'
+      description: Number of days before license expiry that raises a warning.
+    - macro: '{$ELASTICSEARCH.PASSWORD}'
+      type: SECRET_TEXT
+      description: Elasticsearch password (same macro as the official template).
+    - macro: '{$ELASTICSEARCH.PORT}'
+      value: '9200'
+      description: Elasticsearch HTTP port (same macro as the official template).
+    - macro: '{$ELASTICSEARCH.SCHEME}'
+      value: https
+      description: http or https (same macro as the official template).
+    - macro: '{$ELASTICSEARCH.USERNAME}'
+      description: Elasticsearch user with the "monitor" cluster privilege (same macro as the official template).
+    valuemaps:
+    - uuid: 91e5396459f34fd98c738d91a73778f9
+      name: ES health status
+      mappings:
+      - value: '0'
+        newvalue: green
+      - value: '1'
+        newvalue: yellow
+      - value: '2'
+        newvalue: red
+      - value: '3'
+        newvalue: unknown

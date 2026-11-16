@@ -40,3 +40,40 @@ setfacl -m u:zabbix:r /var/log/ipa/healthcheck/healthcheck.log
 ```
 
 Pour l'interface web FreeIPA, lier aussi « SOC - Accès web par HTTP » avec `{$WEB.URL}` = `https://<fqdn>/ipa/ui/`.
+
+## Elasticsearch (testé sur Elasticsearch 9.2.2)
+
+Trois templates complémentaires, sans métrique ni alerte en commun :
+
+| Template | À lier à | Rôle |
+|---|---|---|
+| `Elasticsearch Cluster by HTTP` (officiel Zabbix) | un seul hôte « cluster » | Santé green/yellow/red, shards, heap, latences et pools de threads par nœud |
+| `templates/soc_elasticsearch_health_report_by_http.yaml` | le même hôte « cluster » | Indicateurs `_health_report` (master stable, ILM, SLM, dépôts de snapshots, capacité en shards), licence, master élu |
+| `templates/soc_elasticsearch_node_by_http.yaml` | chaque serveur Elasticsearch | Statut du serveur, rôles, version, CPU, circuit breakers, disque libre en % |
+
+Macros de connexion communes aux trois (à poser en macros globales) : `{$ELASTICSEARCH.USERNAME}`,
+`{$ELASTICSEARCH.PASSWORD}`, `{$ELASTICSEARCH.SCHEME}`, `{$ELASTICSEARCH.PORT}`.
+Sur l'hôte « cluster » : `{$ELASTICSEARCH.HOST}`.
+
+Statut par serveur (`ES: Node status`) : `0` Unreachable, `1` Out of cluster, `2` OK.
+
+Alertes du template par serveur : nœud injoignable, nœud hors cluster (après `{$ELASTICSEARCH.NODE.STATUS.DELAY}` = 3m),
+disque libre < 15 % (WARNING) et < 10 % (HIGH).
+
+Alertes du rapport de santé : une par indicateur, YELLOW ou RED, après `{$ELASTICSEARCH.HEALTH.DELAY}` = 10m.
+`shards_availability` et `disk` sont exclus par défaut (`{$ELASTICSEARCH.HEALTH.INDICATOR.NOT_MATCHES}`) car déjà couverts ailleurs.
+
+## `templates/soc_qradar_by_http.yaml` — SOC - QRadar par HTTP
+
+À lier à un seul hôte : la Console QRadar. Découvre toutes les machines du déploiement via
+`/api/config/deployment/hosts` (jeton « Authorized Service » en lecture seule dans `{$QRADAR.API.TOKEN}`).
+
+- Statut de chaque machine ; alerte si différent de `{$QRADAR.HOST.STATUS.OK}` (`Active` ou `Standby`).
+- EPS moyen, de pointe et alloué ; alerte si l'EPS moyen dépasse 90 % de l'allocation pendant 15 min.
+- Alerte si l'API de la Console ne répond plus depuis 15 min.
+
+Validé uniquement contre une API simulée : vérifier les noms de champs sur la vraie Console avec
+
+```bash
+curl -k -H 'SEC: <jeton>' -H 'Accept: application/json' https://<console>/api/config/deployment/hosts
+```
