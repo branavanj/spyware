@@ -101,23 +101,37 @@ def build_pages(gid):
     heap = [(0, GREEN), (85, YELLOW), (95, RED)]
     queue = [(0, GREEN), (60, YELLOW), (80, RED)]
 
+    load = [(0, GREEN), (80, YELLOW), (90, RED)]
+    lag = [(0, GREEN), (10000, YELLOW), (100000, RED)]
+    age = [(0, GREEN), (300, YELLOW), (900, RED)]
+    # Global view: one screen, top to bottom = alerts, state of each component, log chain, system.
     overview = [
-        widget("problemsbysv", "Problèmes par sévérité", 0, 0, 24, 4,
+        widget("problemsbysv", "Problèmes par sévérité", 0, 0, 18, 3,
                [field(GROUP, "groupids.0", gid), field(INT, "show_type", 1), field(INT, "rf_rate", 60)]),
-        honeycomb("Elasticsearch - santé du cluster par indicateur", 24, 0, 48, 4, gid,
+        honeycomb("Elasticsearch - santé du cluster par indicateur", 18, 0, 30, 3, gid,
                   "ES health [*]: Status", health, primary=IN_BRACKETS),
-        honeycomb("Elasticsearch - statut de chaque serveur", 0, 4, 36, 5, gid, "ES: Node status", es_status),
-        honeycomb("Logstash - état de chaque serveur", 36, 4, 36, 5, gid, "Logstash: Service state", svc_state),
-        honeycomb("Kibana - état de chaque serveur", 0, 9, 24, 4, gid, "Kibana: Service state", svc_state),
-        honeycomb("Kafka - partitions sous-répliquées par broker", 24, 9, 24, 4, gid,
-                  "Under replicated partitions", zero_ok),
-        honeycomb("Kafka - partitions hors ligne par broker", 48, 9, 24, 4, gid,
-                  "Offline partitions count", zero_ok),
-        problems("Problèmes en cours sur la plateforme", 0, 13, 72, 7, gid),
+        honeycomb("Kafka - partitions sous-répliquées", 48, 0, 12, 3, gid, "Under replicated partitions", zero_ok),
+        honeycomb("Kafka - partitions hors ligne", 60, 0, 12, 3, gid, "Offline partitions count", zero_ok),
+        honeycomb("Elasticsearch - statut de chaque serveur", 0, 3, 24, 4, gid, "ES: Node status", es_status),
+        honeycomb("Logstash - état de chaque serveur", 24, 3, 18, 4, gid, "Logstash: Service state", svc_state),
+        honeycomb("Kibana - état de chaque serveur", 42, 3, 12, 4, gid, "Kibana: Service state", svc_state),
+        honeycomb("Kafka - consommateurs actifs par groupe", 54, 3, 18, 4, gid,
+                  "Kafka lag [*]: Active consumers", [(0, RED), (1, GREEN)], primary=IN_BRACKETS),
+        honeycomb("Chaîne de logs - messages en attente dans Kafka", 0, 7, 18, 4, gid,
+                  "Kafka lag [*]: Messages waiting", lag, primary=IN_BRACKETS),
+        honeycomb("Chaîne de logs - âge du dernier document dans Elasticsearch", 18, 7, 18, 4, gid,
+                  "Log freshness [*]: Age of the latest document", age, primary=IN_BRACKETS),
+        graph("Chaîne de logs - documents livrés à Elasticsearch par seconde", 36, 7, 36, 4,
+              [("Logstash output [*]: Documents delivered per second", GREEN)]),
+        honeycomb("CPU par serveur (%)", 0, 11, 18, 4, gid, "CPU utilization", load),
+        honeycomb("Mémoire par serveur (%)", 18, 11, 18, 4, gid, "Memory utilization", load),
+        graph("Bande passante par serveur (entrante / sortante)", 36, 11, 36, 4,
+              [("Interface *: Bits received", "2196F3"), ("Interface *: Bits sent", GREEN)]),
+        problems("Problèmes en cours sur la plateforme", 0, 15, 72, 5, gid),
     ]
     chain = [
         honeycomb("1. Kafka - messages en attente par groupe / topic", 0, 0, 24, 5, gid,
-                  "Kafka lag [*]: Messages waiting", [(0, GREEN), (10000, YELLOW), (100000, RED)], primary=IN_BRACKETS),
+                  "Kafka lag [*]: Messages waiting", lag, primary=IN_BRACKETS),
         honeycomb("1. Kafka - consommateurs actifs par groupe / topic", 24, 0, 24, 5, gid,
                   "Kafka lag [*]: Active consumers", [(0, RED), (1, GREEN)], primary=IN_BRACKETS),
         honeycomb("3. Elasticsearch - âge du dernier document par motif d'index", 48, 0, 24, 5, gid,
@@ -182,7 +196,6 @@ def build_pages(gid):
         graph("Connexions simultanées", 0, 5, 36, 5, [("Kibana: Concurrent connections", GREEN)]),
         graph("Mémoire heap utilisée", 36, 5, 36, 5, [("Kibana: Heap memory used", "9C27B0")]),
     ]
-    load = [(0, GREEN), (80, YELLOW), (90, RED)]
     system = [
         honeycomb("CPU par serveur (%)", 0, 0, 24, 5, gid, "CPU utilization", load),
         honeycomb("Mémoire par serveur (%)", 24, 0, 24, 5, gid, "Memory utilization", load),
@@ -200,7 +213,7 @@ def build_pages(gid):
                ("Interface *: Inbound packets discarded", YELLOW), ("Interface *: Outbound packets discarded", "9E9E9E")]),
     ]
     return [
-        {"name": "Vue d'ensemble", "widgets": overview},
+        {"name": "Vue globale", "widgets": overview},
         {"name": "Chaîne de logs", "widgets": chain},
         {"name": "Elasticsearch", "widgets": elasticsearch},
         {"name": "Logstash", "widgets": logstash},

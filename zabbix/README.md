@@ -140,8 +140,8 @@ ZABBIX_API_TOKEN=<jeton API> python3 dashboards/create_elk_dashboard.py \
     --url https://<zabbix> --group "<groupe d'hôtes ELK>"
 ```
 
-Pages : Vue d'ensemble (une case colorée par serveur Elasticsearch / Logstash / Kibana, partitions Kafka,
-indicateurs de santé, problèmes en cours), Chaîne de logs, Elasticsearch, Logstash, Kafka, Kibana,
+Pages : Vue globale (sur un écran : problèmes par sévérité, une case colorée par serveur Elasticsearch / Logstash / Kibana,
+Kafka, chaîne de logs, CPU, mémoire, bande passante, problèmes en cours), Chaîne de logs, Elasticsearch, Logstash, Kafka, Kibana,
 Système (bande passante par interface, CPU, mémoire, disques, charge, erreurs réseau ; items du template officiel `Linux by Zabbix agent`).
 Les graphiques listent explicitement les hôtes du groupe : relancer le script après ajout ou retrait d'un hôte.
 
@@ -167,6 +167,9 @@ curl -k -H 'SEC: <jeton>' -H 'Accept: application/json' https://<console>/api/co
 avec une source de données Zabbix pointant sur `https://<zabbix>/api_jsonrpc.php`.
 
 Deux variables en haut du dashboard : la source Zabbix et le groupe d'hôtes de la plateforme.
-Sections : Vue d'ensemble, Chaîne de logs, Système (bande passante, CPU, mémoire, disques), Elasticsearch, Logstash, Kafka, Kibana.
+En haut, la « Vue globale » (mêmes informations que la première page du dashboard Zabbix), toujours visible.
+En dessous, des sections de détail repliées : Chaîne de logs, Système, Elasticsearch, Logstash, Kafka, Kibana.
+Requiert Grafana 11.6 ou plus récent avec le plugin Zabbix 6.x.
 
-Non testé : ce fichier n'a pas pu être chargé dans un Grafana réel. Le format des requêtes suit le plugin Zabbix 6.x.
+Non testé : ce fichier n'a pas pu être chargé dans un Grafana réel. Le format des requêtes et des variables
+a été aligné sur le code et les dashboards d'exemple du plugin Zabbix 6.10.3.
