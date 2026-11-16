@@ -14,17 +14,17 @@ zabbix_export:
 
       Ce que ce template ajoute :
       - « ES: Node status » : 0 = Unreachable, 1 = Out of cluster, 2 = OK ;
-      - nom du nœud, version, rôles, CPU, déclenchements de circuit breakers ;
-      - espace disque libre en % sur les volumes de données.
+      - nom du nœud, version, rôles, déclenchements de circuit breakers.
 
-      Quatre alertes seulement : nœud injoignable, nœud hors cluster, disque faible, disque critique.
+      Deux alertes seulement : nœud injoignable, nœud hors cluster.
+      CPU, mémoire et disques du serveur restent supervisés par le template Linux (Zabbix agent).
       Heap JVM, latences et pools de threads par nœud restent dans le template officiel.
 
       Les macros {$ELASTICSEARCH.*} portent le même nom que dans le template officiel : en macros globales, elles servent aux deux.
       Le certificat du nœud n'est pas vérifié (connexion par adresse IP).
     vendor:
       name: SOC
-      version: 8.0-3
+      version: 8.0-4
     groups:
     - name: Templates/SOC
     items:
@@ -220,7 +220,7 @@ zabbix_export:
       password: '{$ELASTICSEARCH.PASSWORD}'
       description: Statistics of this node only (_local), limited to what the official template does not collect.
       timeout: 15s
-      url: '{$ELASTICSEARCH.SCHEME}://{HOST.CONN}:{$ELASTICSEARCH.PORT}/_nodes/_local/stats?filter_path=nodes.*.roles,nodes.*.os.cpu.percent,nodes.*.fs.total.*,nodes.*.breakers.*.tripped'
+      url: '{$ELASTICSEARCH.SCHEME}://{HOST.CONN}:{$ELASTICSEARCH.PORT}/_nodes/_local/stats?filter_path=nodes.*.roles,nodes.*.breakers.*.tripped'
       tags:
       - tag: component
         value: raw
@@ -245,20 +245,6 @@ zabbix_export:
       tags:
       - tag: component
         value: info
-    - uuid: 7e37114975b64dfdbeb3ee65c1a6886f
-      name: 'ES: CPU utilization'
-      type: DEPENDENT
-      key: es.node.os.cpu.percent
-      units: '%'
-      preprocessing:
-      - type: JSONPATH
-        parameters:
-        - $..os.cpu.percent.first()
-      master_item:
-        key: es.node.get_stats
-      tags:
-      - tag: component
-        value: cpu
     - uuid: 1dacf516f74947e7b8a65d8fdb7747ba
       name: 'ES: Circuit breakers tripped'
       type: DEPENDENT
@@ -285,67 +271,12 @@ zabbix_export:
       tags:
       - tag: component
         value: memory
-    - uuid: c83fa635a6fd4467ab589e036f142265
-      name: 'ES: Free space in percent'
-      type: DEPENDENT
-      key: es.node.fs.total.free_percent
-      value_type: FLOAT
-      units: '%'
-      description: Available space on the Elasticsearch data paths of this node.
-      preprocessing:
-      - type: JSONPATH
-        parameters:
-        - $..fs.total.first()
-      - type: JAVASCRIPT
-        parameters:
-        - |
-          var fs = JSON.parse(value);
-          if (!fs.total_in_bytes) {
-              throw 'total size is unknown';
-          }
-          return Math.round(fs.available_in_bytes / fs.total_in_bytes * 10000) / 100;
-      - type: DISCARD_UNCHANGED_HEARTBEAT
-        parameters:
-        - 1h
-      master_item:
-        key: es.node.get_stats
-      tags:
-      - tag: component
-        value: storage
-      triggers:
-      - uuid: 7295dc2921454aea9e3611d2a99b4127
-        expression: max(/SOC Elasticsearch node by HTTP/es.node.fs.total.free_percent,15m)<{$ELASTICSEARCH.FS.FREE.MIN.CRIT}
-        name: 'Elasticsearch: Free disk space is critically low'
-        priority: HIGH
-        opdata: 'Free: {ITEM.LASTVALUE1}'
-        description: Below the high watermark Elasticsearch relocates shards away from this node.
-        tags:
-        - tag: scope
-          value: capacity
-      - uuid: 8f7160633d3c4840828505ea0c88cf3e
-        expression: max(/SOC Elasticsearch node by HTTP/es.node.fs.total.free_percent,15m)<{$ELASTICSEARCH.FS.FREE.MIN.WARN}
-        name: 'Elasticsearch: Free disk space is low'
-        priority: WARNING
-        opdata: 'Free: {ITEM.LASTVALUE1}'
-        description: Below the low watermark Elasticsearch stops allocating new shards to this node.
-        dependencies:
-        - name: 'Elasticsearch: Free disk space is critically low'
-          expression: max(/SOC Elasticsearch node by HTTP/es.node.fs.total.free_percent,15m)<{$ELASTICSEARCH.FS.FREE.MIN.CRIT}
-        tags:
-        - tag: scope
-          value: capacity
     tags:
     - tag: class
       value: database
     - tag: target
       value: elasticsearch
     macros:
-    - macro: '{$ELASTICSEARCH.FS.FREE.MIN.CRIT}'
-      value: '10'
-      description: Critical threshold of free disk space on the data paths, in %.
-    - macro: '{$ELASTICSEARCH.FS.FREE.MIN.WARN}'
-      value: '15'
-      description: Warning threshold of free disk space on the data paths, in %.
     - macro: '{$ELASTICSEARCH.NODE.STATUS.DELAY}'
       value: 3m
       description: How long the node status must stay degraded before a problem is raised.

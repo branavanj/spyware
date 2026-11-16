@@ -18,7 +18,7 @@ zabbix_export:
 
       Pour ne pas doubler les alertes existantes, {$ELASTICSEARCH.HEALTH.INDICATOR.NOT_MATCHES} exclut par défaut :
       - shards_availability : déjà couvert par « Health is YELLOW / RED » et les shards non assignés du template officiel ;
-      - disk : déjà couvert par les alertes disque par nœud de « SOC - Nœud Elasticsearch par HTTP ».
+      - disk : les disques de chaque serveur sont déjà supervisés par le template Linux (Zabbix agent).
 
       Un indicateur ne lève qu'une alerte à la fois (YELLOW ou RED), après {$ELASTICSEARCH.HEALTH.DELAY} dans cet état.
       Les macros de connexion {$ELASTICSEARCH.*} sont celles du template officiel.

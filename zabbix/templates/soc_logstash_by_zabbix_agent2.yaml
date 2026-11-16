@@ -1,0 +1,568 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+  - uuid: b6134a9989f04441a897b9b3f6839771
+    name: Templates/SOC
+  templates:
+  - uuid: 5335685b313b4b4a9e39d9a004d0c436
+    template: SOC Logstash by Zabbix agent 2
+    name: SOC - Logstash par Zabbix agent 2
+    description: |
+      Supervision d'un serveur Logstash par son API de monitoring (port 9600), interrogée EN LOCAL par Zabbix agent 2 :
+      rien à ouvrir sur le réseau, et l'API peut rester sur son adresse par défaut 127.0.0.1.
+      À lier à chaque serveur Logstash, en plus du template Linux (CPU, mémoire, disques n'y sont pas repris).
+
+      Ce qui est supervisé :
+      - joignabilité de Logstash, statut global green / yellow / red calculé par Logstash, version, uptime ;
+      - heap JVM, événements reçus et émis par seconde, file d'attente, contre-pression ;
+      - par pipeline (découverte) : débit entrant / sortant, charge des workers, remplissage de la file persistante, état du dernier rechargement de configuration.
+
+      Alertes : Logstash injoignable, statut RED, statut YELLOW (longue temporisation), heap élevé,
+      file persistante qui se remplit, dernier rechargement d'un pipeline en échec.
+      Si l'agent Zabbix est lui-même arrêté, ce template ne lève rien : seule l'alerte agent du template Linux part.
+
+      Prérequis : API de monitoring sans authentification ni TLS sur {$LOGSTASH.API.HOST}:{$LOGSTASH.API.PORT} (configuration par défaut de Logstash).
+    vendor:
+      name: SOC
+      version: 8.0-1
+    groups:
+    - name: Templates/SOC
+    items:
+    - uuid: 7afc47f204ee43aab10848c5f880887b
+      name: 'Logstash: Get node stats'
+      key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      history: '0'
+      value_type: TEXT
+      description: Logstash monitoring API, queried locally by Zabbix agent 2. When Logstash does not answer, the value is replaced with {} so that "API reachable" drops to 0. If the agent itself is down, nothing is collected and only the agent alert fires.
+      preprocessing:
+      - type: CHECK_NOT_SUPPORTED
+        parameters:
+        - '0'
+        - Cannot get content of web page
+        error_handler: CUSTOM_VALUE
+        error_handler_params: '{}'
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var i = value.indexOf('\r\n\r\n');
+          if (i < 0) {
+              i = value.indexOf('\n\n');
+          }
+          return i < 0 ? value : value.substring(i).replace(/^\s+/, '');
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 1248fd5ab5a64af980eedb2cea3abfc9
+      name: 'Logstash: API reachable'
+      type: DEPENDENT
+      key: logstash.ping
+      description: 1 if the Logstash monitoring API answers, 0 otherwise.
+      valuemap:
+        name: Logstash yes/no
+      tags:
+      - tag: component
+        value: status
+      triggers:
+      - uuid: 8aab67feb8b8458485d35af4611820bb
+        expression: max(/SOC Logstash by Zabbix agent 2/logstash.ping,{$LOGSTASH.STATUS.DELAY})=0
+        name: 'Logstash: Service is unreachable'
+        priority: HIGH
+        description: 'The Logstash monitoring API does not answer on the server: Logstash is stopped or still starting.'
+        tags:
+        - tag: scope
+          value: availability
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          try {
+              return JSON.parse(value).version ? 1 : 0;
+          }
+          catch (e) {
+              return 0;
+          }
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: 55c109fc6418444192e95893355cdcdf
+      name: 'Logstash: Status'
+      type: DEPENDENT
+      key: logstash.status
+      description: Overall status computed by Logstash itself (pipelines health).
+      valuemap:
+        name: Logstash status
+      tags:
+      - tag: component
+        value: status
+      triggers:
+      - uuid: 564ffb0ace6146b7ab23442263fa18b7
+        expression: min(/SOC Logstash by Zabbix agent 2/logstash.status,{$LOGSTASH.STATUS.RED.DELAY})=2
+        name: 'Logstash: Status is RED'
+        priority: HIGH
+        description: 'Logstash reports a red status for {$LOGSTASH.STATUS.RED.DELAY}: at least one pipeline is failing or blocked.'
+        tags:
+        - tag: scope
+          value: availability
+      - uuid: ca2ac37066f542798d4ac3132d13d0df
+        expression: min(/SOC Logstash by Zabbix agent 2/logstash.status,{$LOGSTASH.STATUS.YELLOW.DELAY})>=1 and max(/SOC Logstash by Zabbix agent 2/logstash.status,{$LOGSTASH.STATUS.YELLOW.DELAY})<3
+        name: 'Logstash: Status is YELLOW'
+        priority: WARNING
+        description: 'Logstash has not been green for {$LOGSTASH.STATUS.YELLOW.DELAY}: at least one pipeline is degraded or saturated.'
+        dependencies:
+        - name: 'Logstash: Status is RED'
+          expression: min(/SOC Logstash by Zabbix agent 2/logstash.status,{$LOGSTASH.STATUS.RED.DELAY})=2
+        tags:
+        - tag: scope
+          value: performance
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.status
+        error_handler: DISCARD_VALUE
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var m = {green: 0, yellow: 1, red: 2};
+          return value in m ? m[value] : 3;
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: 8a6d789e365b434b85caa9a445b48376
+      name: 'Logstash: Service state'
+      type: DEPENDENT
+      key: logstash.state
+      description: 'Single value for dashboards: 0 = Unreachable, 1 = Red, 2 = Yellow, 3 = Green. No trigger on this item.'
+      valuemap:
+        name: Logstash service state
+      tags:
+      - tag: component
+        value: status
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var m = {red: 1, yellow: 2, green: 3};
+          try {
+              var d = JSON.parse(value);
+              if (!d.version) {
+                  return 0;
+              }
+              return d.status in m ? m[d.status] : 3;
+          }
+          catch (e) {
+              return 0;
+          }
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: 6f90c43080154efc87f2dade64744798
+      name: 'Logstash: Version'
+      type: DEPENDENT
+      key: logstash.version
+      value_type: CHAR
+      tags:
+      - tag: component
+        value: info
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.version
+        error_handler: DISCARD_VALUE
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: a20b70829c7d4950a0e17fe29cd6d5e5
+      name: 'Logstash: Uptime'
+      type: DEPENDENT
+      key: logstash.jvm.uptime
+      units: uptime
+      tags:
+      - tag: component
+        value: system
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.jvm.uptime_in_millis
+        error_handler: DISCARD_VALUE
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: c2a0a667025b4d5a978542d69a159fcf
+      name: 'Logstash: Percent of JVM heap currently in use'
+      type: DEPENDENT
+      key: logstash.jvm.heap_used_percent
+      units: '%'
+      tags:
+      - tag: component
+        value: memory
+      triggers:
+      - uuid: a8ef79acac8b489796d7801d8c547734
+        expression: min(/SOC Logstash by Zabbix agent 2/logstash.jvm.heap_used_percent,1h)>{$LOGSTASH.HEAP_USED.MAX.WARN}
+        name: 'Logstash: Percent of JVM heap in use is high'
+        priority: WARNING
+        opdata: 'Heap: {ITEM.LASTVALUE1}'
+        description: The JVM heap has stayed above {$LOGSTASH.HEAP_USED.MAX.WARN}% for 1 hour.
+        tags:
+        - tag: scope
+          value: performance
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.jvm.mem.heap_used_percent
+        error_handler: DISCARD_VALUE
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: beef48898806469fb8a54cd9de8f1278
+      name: 'Logstash: Events received per second'
+      type: DEPENDENT
+      key: logstash.events.in.rate
+      value_type: FLOAT
+      units: '!evt/s'
+      tags:
+      - tag: component
+        value: events
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.events.in
+        error_handler: DISCARD_VALUE
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: 397457c1485b40a78536811159e4d78d
+      name: 'Logstash: Events sent per second'
+      type: DEPENDENT
+      key: logstash.events.out.rate
+      value_type: FLOAT
+      units: '!evt/s'
+      tags:
+      - tag: component
+        value: events
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.events.out
+        error_handler: DISCARD_VALUE
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: ed394ea9105243568476c729f4de71cb
+      name: 'Logstash: Events waiting in queues'
+      type: DEPENDENT
+      key: logstash.queue.events_count
+      tags:
+      - tag: component
+        value: queue
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.queue.events_count
+        error_handler: DISCARD_VALUE
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    - uuid: b2c483ea5c9843aab77e6d26af332c7b
+      name: 'Logstash: Queue backpressure'
+      type: DEPENDENT
+      key: logstash.flow.queue_backpressure
+      value_type: FLOAT
+      description: Share of time inputs were blocked pushing to the queue over the last minute (0 = never blocked).
+      tags:
+      - tag: component
+        value: queue
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.flow.queue_backpressure.last_1_minute
+        error_handler: DISCARD_VALUE
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+    discovery_rules:
+    - uuid: 28c47292bdee43d9ac9c2d6b5ba9b978
+      name: Pipelines discovery
+      type: DEPENDENT
+      key: logstash.pipelines.discovery
+      delay: '0'
+      filter:
+        conditions:
+        - macro: '{#PIPELINE}'
+          value: '{$LOGSTASH.PIPELINE.NOT_MATCHES}'
+          operator: NOT_MATCHES_REGEX
+      description: One entry per Logstash pipeline.
+      item_prototypes:
+      - uuid: 397c4ba76e0e48fa859bc637ff72fdcb
+        name: 'Logstash pipeline [{#PIPELINE}]: Events received per second'
+        type: DEPENDENT
+        key: logstash.pipeline.events.in.rate["{#PIPELINE}"]
+        value_type: FLOAT
+        units: '!evt/s'
+        tags:
+        - tag: component
+          value: events
+        - tag: pipeline
+          value: '{#PIPELINE}'
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].events.in
+        - type: CHANGE_PER_SECOND
+          parameters:
+          - ''
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      - uuid: 97e2271514bd4fdaaf97541b162267e0
+        name: 'Logstash pipeline [{#PIPELINE}]: Events sent per second'
+        type: DEPENDENT
+        key: logstash.pipeline.events.out.rate["{#PIPELINE}"]
+        value_type: FLOAT
+        units: '!evt/s'
+        tags:
+        - tag: component
+          value: events
+        - tag: pipeline
+          value: '{#PIPELINE}'
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].events.out
+        - type: CHANGE_PER_SECOND
+          parameters:
+          - ''
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      - uuid: 28f9e0061d59465093e1805e06d2a392
+        name: 'Logstash pipeline [{#PIPELINE}]: Worker utilization'
+        type: DEPENDENT
+        key: logstash.pipeline.worker_utilization["{#PIPELINE}"]
+        value_type: FLOAT
+        units: '%'
+        description: Share of the pipeline workers capacity used over the last minute.
+        tags:
+        - tag: component
+          value: workers
+        - tag: pipeline
+          value: '{#PIPELINE}'
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].flow.worker_utilization.last_1_minute
+          error_handler: DISCARD_VALUE
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      - uuid: 7f61f692ee474210ba8a535d524ef47d
+        name: 'Logstash pipeline [{#PIPELINE}]: Queue type'
+        type: DEPENDENT
+        key: logstash.pipeline.queue.type["{#PIPELINE}"]
+        value_type: CHAR
+        tags:
+        - tag: component
+          value: queue
+        - tag: pipeline
+          value: '{#PIPELINE}'
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].queue.type
+        - type: DISCARD_UNCHANGED_HEARTBEAT
+          parameters:
+          - 1d
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      - uuid: 35d64095b8bc489185bdd07d28d0ef6e
+        name: 'Logstash pipeline [{#PIPELINE}]: Events waiting in queue'
+        type: DEPENDENT
+        key: logstash.pipeline.queue.events_count["{#PIPELINE}"]
+        tags:
+        - tag: component
+          value: queue
+        - tag: pipeline
+          value: '{#PIPELINE}'
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].queue.events_count
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      - uuid: c4478aabc85044d3a5078c842d8e7eaa
+        name: 'Logstash pipeline [{#PIPELINE}]: Persistent queue usage'
+        type: DEPENDENT
+        key: logstash.pipeline.queue.fill_percent["{#PIPELINE}"]
+        value_type: FLOAT
+        units: '%'
+        description: Used share of the persistent queue. Always 0 for a memory queue.
+        tags:
+        - tag: component
+          value: queue
+        - tag: pipeline
+          value: '{#PIPELINE}'
+        trigger_prototypes:
+        - uuid: b0e5789da3074c6c9d323c2b79a40800
+          expression: min(/SOC Logstash by Zabbix agent 2/logstash.pipeline.queue.fill_percent["{#PIPELINE}"],10m)>{$LOGSTASH.QUEUE.FILL.MAX.WARN}
+          name: 'Logstash pipeline [{#PIPELINE}]: Persistent queue is filling up'
+          priority: WARNING
+          opdata: 'Queue usage: {ITEM.LASTVALUE1}'
+          description: 'The persistent queue has stayed above {$LOGSTASH.QUEUE.FILL.MAX.WARN}% for 10 minutes: outputs do not keep up. When it is full, inputs are blocked.'
+          tags:
+          - tag: scope
+            value: capacity
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].queue
+        - type: JAVASCRIPT
+          parameters:
+          - |
+            var q = JSON.parse(value);
+            if (q.type !== 'persisted' || !q.max_queue_size_in_bytes) {
+                return 0;
+            }
+            return Math.round(q.queue_size_in_bytes / q.max_queue_size_in_bytes * 10000) / 100;
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      - uuid: d9f2235e7c8b46bf932c71a1136425f8
+        name: 'Logstash pipeline [{#PIPELINE}]: Last reload failed'
+        type: DEPENDENT
+        key: logstash.pipeline.reload.failed["{#PIPELINE}"]
+        description: 1 while the most recent configuration reload of this pipeline is a failure.
+        valuemap:
+          name: Logstash yes/no
+        tags:
+        - tag: component
+          value: config
+        - tag: pipeline
+          value: '{#PIPELINE}'
+        trigger_prototypes:
+        - uuid: 22961333ad2f4a55b2ff39560272374d
+          expression: last(/SOC Logstash by Zabbix agent 2/logstash.pipeline.reload.failed["{#PIPELINE}"])=1 and length(last(/SOC Logstash by Zabbix agent 2/logstash.pipeline.reload.error["{#PIPELINE}"]))>=0
+          name: 'Logstash pipeline [{#PIPELINE}]: Last configuration reload failed'
+          priority: WARNING
+          opdata: '{ITEM.LASTVALUE2}'
+          description: The pipeline still runs with its previous configuration. The problem closes at the next successful reload.
+          tags:
+          - tag: scope
+            value: notice
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].reloads
+        - type: JAVASCRIPT
+          parameters:
+          - |
+            var r = JSON.parse(value);
+            var f = r.last_failure_timestamp ? Date.parse(r.last_failure_timestamp) : 0;
+            var s = r.last_success_timestamp ? Date.parse(r.last_success_timestamp) : 0;
+            return f > s ? 1 : 0;
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      - uuid: b9f5604c49ac4d218ffbea56c9ff14bc
+        name: 'Logstash pipeline [{#PIPELINE}]: Last reload error'
+        type: DEPENDENT
+        key: logstash.pipeline.reload.error["{#PIPELINE}"]
+        value_type: TEXT
+        tags:
+        - tag: component
+          value: config
+        - tag: pipeline
+          value: '{#PIPELINE}'
+        preprocessing:
+        - type: JSONPATH
+          parameters:
+          - $.pipelines['{#PIPELINE}'].reloads.last_error
+        - type: JAVASCRIPT
+          parameters:
+          - |
+            var e = JSON.parse(value);
+            if (!e) {
+                return 'none';
+            }
+            return String(e.message || JSON.stringify(e)).substring(0, 1000);
+        - type: DISCARD_UNCHANGED_HEARTBEAT
+          parameters:
+          - 1d
+        master_item:
+          key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      master_item:
+        key: web.page.get[{$LOGSTASH.API.HOST},/_node/stats,{$LOGSTASH.API.PORT}]
+      lld_macro_paths:
+      - lld_macro: '{#PIPELINE}'
+        path: $.id
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var p = JSON.parse(value).pipelines;
+          if (!p) {
+              throw 'no pipeline data';
+          }
+          var out = [];
+          for (var k in p) {
+              out.push({id: k});
+          }
+          return JSON.stringify(out);
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+    tags:
+    - tag: class
+      value: application
+    - tag: target
+      value: logstash
+    macros:
+    - macro: '{$LOGSTASH.API.HOST}'
+      value: 127.0.0.1
+      description: Address of the Logstash monitoring API, as seen from the server itself.
+    - macro: '{$LOGSTASH.API.PORT}'
+      value: '9600'
+      description: Port of the Logstash monitoring API.
+    - macro: '{$LOGSTASH.HEAP_USED.MAX.WARN}'
+      value: '85'
+      description: Warning threshold of JVM heap usage, in %.
+    - macro: '{$LOGSTASH.PIPELINE.NOT_MATCHES}'
+      value: ^\.monitoring-logstash$
+      description: Pipelines to ignore.
+    - macro: '{$LOGSTASH.QUEUE.FILL.MAX.WARN}'
+      value: '80'
+      description: Warning threshold of persistent queue usage, in %.
+    - macro: '{$LOGSTASH.STATUS.DELAY}'
+      value: 3m
+      description: How long Logstash must stay unreachable before a problem is raised.
+    - macro: '{$LOGSTASH.STATUS.RED.DELAY}'
+      value: 5m
+      description: How long the status must stay red before a problem is raised.
+    - macro: '{$LOGSTASH.STATUS.YELLOW.DELAY}'
+      value: 30m
+      description: How long the status must stay non-green before a problem is raised.
+    valuemaps:
+    - uuid: 754c3723fc5a4aba9cbbb9f7638cefe5
+      name: Logstash yes/no
+      mappings:
+      - value: '0'
+        newvalue: 'No'
+      - value: '1'
+        newvalue: 'Yes'
+    - uuid: e0626449a8e04af5833035836f8abf0b
+      name: Logstash service state
+      mappings:
+      - value: '0'
+        newvalue: Unreachable
+      - value: '1'
+        newvalue: Red
+      - value: '2'
+        newvalue: Yellow
+      - value: '3'
+        newvalue: Green
+    - uuid: ea11e8fe5b7443b8b0960e8bbd6478b3
+      name: Logstash status
+      mappings:
+      - value: '0'
+        newvalue: green
+      - value: '1'
+        newvalue: yellow
+      - value: '2'
+        newvalue: red
+      - value: '3'
+        newvalue: unknown

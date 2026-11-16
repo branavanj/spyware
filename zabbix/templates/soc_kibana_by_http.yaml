@@ -1,0 +1,312 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+  - uuid: b6134a9989f04441a897b9b3f6839771
+    name: Templates/SOC
+  templates:
+  - uuid: b865e64e782c444394c38c71c5b827a6
+    template: SOC Kibana by HTTP
+    name: SOC - Kibana par HTTP
+    description: |
+      Supervision de Kibana par son API de statut (/api/status), interrogée par le serveur/proxy Zabbix. Aucun agent requis.
+      À lier à chaque serveur Kibana.
+
+      Ce qui est supervisé :
+      - joignabilité de Kibana et statut global calculé par Kibana (available / degraded / unavailable / critical) ;
+      - avec authentification : phrase d'explication, version, temps de réponse, connexions simultanées, mémoire heap.
+
+      Alertes : Kibana injoignable, statut unavailable/critical, statut degraded (longue temporisation).
+
+      Sans authentification, Kibana ne renvoie que le niveau de statut : les alertes fonctionnent, les autres items restent vides.
+      Pour le détail, renseigner {$KIBANA.AUTH.HEADER} avec « ApiKey <clé> » ou « Basic <base64 de utilisateur:motdepasse> ».
+      Le certificat n'est pas vérifié (connexion par adresse IP). Si Kibana utilise server.basePath, le renseigner dans {$KIBANA.BASE.PATH}.
+    vendor:
+      name: SOC
+      version: 8.0-1
+    groups:
+    - name: Templates/SOC
+    items:
+    - uuid: 13552056412f44c880613c2070162c2d
+      name: 'Kibana: Get status'
+      type: HTTP_AGENT
+      key: kibana.status.get
+      history: '0'
+      value_type: TEXT
+      description: Kibana status API. On any error the value is replaced with {} so that "API reachable" drops to 0. Kibana answers 503 with a body when it is unavailable.
+      preprocessing:
+      - type: CHECK_NOT_SUPPORTED
+        parameters:
+        - '-1'
+        error_handler: CUSTOM_VALUE
+        error_handler_params: '{}'
+      timeout: 15s
+      url: '{$KIBANA.SCHEME}://{HOST.CONN}:{$KIBANA.PORT}{$KIBANA.BASE.PATH}/api/status'
+      status_codes: 200,503
+      headers:
+      - name: Authorization
+        value: '{$KIBANA.AUTH.HEADER}'
+      tags:
+      - tag: component
+        value: raw
+    - uuid: a904c0be52c54373abedbdf1d74a1b53
+      name: 'Kibana: API reachable'
+      type: DEPENDENT
+      key: kibana.ping
+      description: 1 if the Kibana status API answers, 0 otherwise.
+      valuemap:
+        name: Kibana yes/no
+      tags:
+      - tag: component
+        value: status
+      triggers:
+      - uuid: 7c2327181ef74c098adba550ab1e6619
+        expression: max(/SOC Kibana by HTTP/kibana.ping,{$KIBANA.STATUS.DELAY})=0
+        name: 'Kibana: Service is unreachable'
+        priority: HIGH
+        description: 'The Kibana status API does not answer: Kibana is stopped, still starting, or the network flow is cut.'
+        tags:
+        - tag: scope
+          value: availability
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          try {
+              return JSON.parse(value).status.overall.level ? 1 : 0;
+          }
+          catch (e) {
+              return 0;
+          }
+      master_item:
+        key: kibana.status.get
+    - uuid: a25b15d9a7424387a344ebac82156a82
+      name: 'Kibana: Status'
+      type: DEPENDENT
+      key: kibana.status.level
+      description: Overall status computed by Kibana itself.
+      valuemap:
+        name: Kibana status
+      tags:
+      - tag: component
+        value: status
+      triggers:
+      - uuid: ee073e36d7f14de3a92793982426dd41
+        expression: min(/SOC Kibana by HTTP/kibana.status.level,{$KIBANA.STATUS.UNAVAILABLE.DELAY})>=2 and length(last(/SOC Kibana by HTTP/kibana.status.summary))>=0
+        name: 'Kibana: Status is unavailable'
+        priority: HIGH
+        opdata: '{ITEM.LASTVALUE2}'
+        description: 'Kibana answers but reports itself unavailable or critical (typically: Elasticsearch unreachable from Kibana).'
+        tags:
+        - tag: scope
+          value: availability
+      - uuid: 92ff067c35ce4251880ed0a63e7b076d
+        expression: min(/SOC Kibana by HTTP/kibana.status.level,{$KIBANA.STATUS.DEGRADED.DELAY})=1 and length(last(/SOC Kibana by HTTP/kibana.status.summary))>=0
+        name: 'Kibana: Status is degraded'
+        priority: WARNING
+        opdata: '{ITEM.LASTVALUE2}'
+        description: Kibana reports a degraded status for {$KIBANA.STATUS.DEGRADED.DELAY}.
+        tags:
+        - tag: scope
+          value: performance
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.status.overall.level
+        error_handler: DISCARD_VALUE
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var m = {available: 0, degraded: 1, unavailable: 2, critical: 3};
+          return value in m ? m[value] : 4;
+      master_item:
+        key: kibana.status.get
+    - uuid: 072d88c296f44307b1b42476de4ed8d2
+      name: 'Kibana: Service state'
+      type: DEPENDENT
+      key: kibana.state
+      description: 'Single value for dashboards: 0 = Unreachable, 1 = Unavailable, 2 = Degraded, 3 = Available. No trigger on this item.'
+      valuemap:
+        name: Kibana service state
+      tags:
+      - tag: component
+        value: status
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          var m = {critical: 1, unavailable: 1, degraded: 2, available: 3};
+          try {
+              var l = JSON.parse(value).status.overall.level;
+              return l in m ? m[l] : 0;
+          }
+          catch (e) {
+              return 0;
+          }
+      master_item:
+        key: kibana.status.get
+    - uuid: 691e007e922d479fa1625a5d9b417e75
+      name: 'Kibana: Status summary'
+      type: DEPENDENT
+      key: kibana.status.summary
+      value_type: TEXT
+      description: Explanation given by Kibana. Requires an authenticated request.
+      tags:
+      - tag: component
+        value: status
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - |
+          try {
+              return JSON.parse(value).status.overall.summary || 'none';
+          }
+          catch (e) {
+              return 'none';
+          }
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1h
+      master_item:
+        key: kibana.status.get
+    - uuid: cdc8f3c2029343968e8692d1dfceabf5
+      name: 'Kibana: Version'
+      type: DEPENDENT
+      key: kibana.version
+      value_type: CHAR
+      description: Requires an authenticated request.
+      tags:
+      - tag: component
+        value: info
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.version.number
+        error_handler: DISCARD_VALUE
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 1d
+      master_item:
+        key: kibana.status.get
+    - uuid: f4408cac55894602a4c6bb39c0ab218c
+      name: 'Kibana: Average response time'
+      type: DEPENDENT
+      key: kibana.response_time.avg
+      value_type: FLOAT
+      units: '!ms'
+      description: Requires an authenticated request.
+      tags:
+      - tag: component
+        value: performance
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.metrics.response_times.avg_in_millis
+        error_handler: DISCARD_VALUE
+      master_item:
+        key: kibana.status.get
+    - uuid: 7b82ef5bc7da4ac1aa441db57a0d47ca
+      name: 'Kibana: Maximum response time'
+      type: DEPENDENT
+      key: kibana.response_time.max
+      value_type: FLOAT
+      units: '!ms'
+      description: Requires an authenticated request.
+      tags:
+      - tag: component
+        value: performance
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.metrics.response_times.max_in_millis
+        error_handler: DISCARD_VALUE
+      master_item:
+        key: kibana.status.get
+    - uuid: 7340bc5a6efa4971931a8c550623acf1
+      name: 'Kibana: Concurrent connections'
+      type: DEPENDENT
+      key: kibana.concurrent_connections
+      description: Requires an authenticated request.
+      tags:
+      - tag: component
+        value: performance
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.metrics.concurrent_connections
+        error_handler: DISCARD_VALUE
+      master_item:
+        key: kibana.status.get
+    - uuid: 59a488257aef4e579cf090eacf3c384e
+      name: 'Kibana: Heap memory used'
+      type: DEPENDENT
+      key: kibana.heap.used
+      units: B
+      description: Requires an authenticated request.
+      tags:
+      - tag: component
+        value: memory
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $.metrics.process.memory.heap.used_in_bytes
+        error_handler: DISCARD_VALUE
+      master_item:
+        key: kibana.status.get
+    tags:
+    - tag: class
+      value: application
+    - tag: target
+      value: kibana
+    macros:
+    - macro: '{$KIBANA.AUTH.HEADER}'
+      type: SECRET_TEXT
+      description: 'Optional Authorization header value: "ApiKey <key>" or "Basic <base64>". Empty = anonymous request.'
+    - macro: '{$KIBANA.BASE.PATH}'
+      description: Kibana server.basePath, if any (e.g. /kibana). Empty by default.
+    - macro: '{$KIBANA.PORT}'
+      value: '5601'
+      description: Kibana HTTP port.
+    - macro: '{$KIBANA.SCHEME}'
+      value: https
+      description: http or https.
+    - macro: '{$KIBANA.STATUS.DEGRADED.DELAY}'
+      value: 30m
+      description: How long the status must stay degraded before a problem is raised.
+    - macro: '{$KIBANA.STATUS.DELAY}'
+      value: 3m
+      description: How long Kibana must stay unreachable before a problem is raised.
+    - macro: '{$KIBANA.STATUS.UNAVAILABLE.DELAY}'
+      value: 5m
+      description: How long the status must stay unavailable or critical before a problem is raised.
+    valuemaps:
+    - uuid: e96caa9ffe7f4274831f6d4f230a59eb
+      name: Kibana yes/no
+      mappings:
+      - value: '0'
+        newvalue: 'No'
+      - value: '1'
+        newvalue: 'Yes'
+    - uuid: a5497f0668b845fb857b8f97586804e6
+      name: Kibana service state
+      mappings:
+      - value: '0'
+        newvalue: Unreachable
+      - value: '1'
+        newvalue: Unavailable
+      - value: '2'
+        newvalue: Degraded
+      - value: '3'
+        newvalue: Available
+    - uuid: 6c49c02c182640f7873f44bb0fb5e6a9
+      name: Kibana status
+      mappings:
+      - value: '0'
+        newvalue: available
+      - value: '1'
+        newvalue: degraded
+      - value: '2'
+        newvalue: unavailable
+      - value: '3'
+        newvalue: critical
+      - value: '4'
+        newvalue: unknown
