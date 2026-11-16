@@ -141,8 +141,10 @@ ZABBIX_API_TOKEN=<jeton API> python3 dashboards/create_elk_dashboard.py \
 ```
 
 Pages : Vue d'ensemble (une case colorée par serveur Elasticsearch / Logstash / Kibana, partitions Kafka,
-indicateurs de santé, problèmes en cours), Chaîne de logs, Elasticsearch, Logstash, Kafka, Kibana.
-Les graphiques sélectionnent les items par nom sur tous les hôtes, pas seulement ceux du groupe.
+indicateurs de santé, problèmes en cours), Chaîne de logs, Elasticsearch, Logstash, Kafka, Kibana,
+Système (bande passante par interface, CPU, mémoire, disques, charge, erreurs réseau ; items du template officiel `Linux by Zabbix agent`).
+Les graphiques listent explicitement les hôtes du groupe : relancer le script après ajout ou retrait d'un hôte.
+
 
 ## `templates/soc_qradar_by_http.yaml` — SOC - QRadar par HTTP
 
@@ -158,3 +160,13 @@ Validé uniquement contre une API simulée : vérifier les noms de champs sur la
 ```bash
 curl -k -H 'SEC: <jeton>' -H 'Accept: application/json' https://<console>/api/config/deployment/hosts
 ```
+
+## `grafana/soc_plateforme_elk.json` — le même dashboard pour Grafana
+
+À importer dans Grafana (*Dashboards → New → Import*). Prérequis : plugin `alexanderzobnin-zabbix-app` installé et activé,
+avec une source de données Zabbix pointant sur `https://<zabbix>/api_jsonrpc.php`.
+
+Deux variables en haut du dashboard : la source Zabbix et le groupe d'hôtes de la plateforme.
+Sections : Vue d'ensemble, Chaîne de logs, Système (bande passante, CPU, mémoire, disques), Elasticsearch, Logstash, Kafka, Kibana.
+
+Non testé : ce fichier n'a pas pu être chargé dans un Grafana réel. Le format des requêtes suit le plugin Zabbix 6.x.

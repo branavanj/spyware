@@ -3,7 +3,8 @@
 
 The dashboard only needs ONE host group containing every host of the platform
 (Elasticsearch cluster host, Elasticsearch nodes, Logstash, Kibana, Kafka).
-Widgets select their data by item name, so nothing else has to be configured.
+Widgets select their data by item name inside that group, so nothing else has to be configured.
+Run the script again after adding or removing hosts in the group: graphs list the hosts explicitly.
 
 Usage:
     ZABBIX_API_TOKEN=<token> python3 create_elk_dashboard.py \
@@ -13,7 +14,8 @@ Templates expected on the hosts of the group:
     Elasticsearch Cluster by HTTP (official), SOC Elasticsearch health report by HTTP,
     SOC Elasticsearch node by HTTP, SOC Elasticsearch data freshness by HTTP,
     SOC Logstash by Zabbix agent 2, SOC Kibana by HTTP,
-    Apache Kafka by JMX (official), SOC Kafka consumer lag by Zabbix agent 2.
+    Apache Kafka by JMX (official), SOC Kafka consumer lag by Zabbix agent 2,
+    Linux by Zabbix agent (official) for the "Système" page (CPU, memory, disks, bandwidth).
 A missing template only leaves the matching widgets empty.
 """
 import argparse
@@ -28,6 +30,7 @@ GREEN, YELLOW, ORANGE, RED, GREY = "0EC9AC", "FFD54F", "FF9800", "FF465C", "9E9E
 IN_BRACKETS = '{{ITEM.NAME}.regsub("\\[(.*)\\]", "\\1")}'
 ES_NODE = '{{ITEM.NAME}.regsub("^ES (.*): ", "\\1")}'
 INT, STR, GROUP = 0, 1, 2
+HOSTS = []  # names of the hosts of the platform group, used to scope the graphs
 
 
 class Api:
@@ -72,10 +75,14 @@ def honeycomb(name, x, y, w, h, gid, item, thresholds, primary="{HOST.NAME}", de
 
 
 def graph(name, x, y, w, h, datasets):
-    """Line graph. datasets = [(item pattern, colour), ...], one line per matching host/item."""
+    """Line graph. datasets = [(item pattern, colour), ...], one line per matching host/item.
+
+    Only the hosts of the platform group are drawn (HOSTS is filled in main)."""
     fields = [field(INT, "rf_rate", 60), field(INT, "legend_lines", 4)]
     for i, (item, color) in enumerate(datasets):
-        fields += [field(STR, "ds.%d.hosts.0" % i, "*"), field(STR, "ds.%d.items.0" % i, item),
+        for j, host in enumerate(HOSTS):
+            fields.append(field(STR, "ds.%d.hosts.%d" % (i, j), host))
+        fields += [field(STR, "ds.%d.items.0" % i, item),
                    field(STR, "ds.%d.color" % i, color), field(INT, "ds.%d.fill" % i, 1),
                    field(INT, "ds.%d.transparency" % i, 5)]
     return widget("svggraph", name, x, y, w, h, fields)
@@ -175,6 +182,23 @@ def build_pages(gid):
         graph("Connexions simultanées", 0, 5, 36, 5, [("Kibana: Concurrent connections", GREEN)]),
         graph("Mémoire heap utilisée", 36, 5, 36, 5, [("Kibana: Heap memory used", "9C27B0")]),
     ]
+    load = [(0, GREEN), (80, YELLOW), (90, RED)]
+    system = [
+        honeycomb("CPU par serveur (%)", 0, 0, 24, 5, gid, "CPU utilization", load),
+        honeycomb("Mémoire par serveur (%)", 24, 0, 24, 5, gid, "Memory utilization", load),
+        honeycomb("Systèmes de fichiers (% utilisé)", 48, 0, 24, 5, gid, "FS [*]: Space: Used, in %", load,
+                  primary="{HOST.NAME} " + IN_BRACKETS),
+        graph("Bande passante entrante par serveur et interface", 0, 5, 36, 6,
+              [("Interface *: Bits received", "2196F3")]),
+        graph("Bande passante sortante par serveur et interface", 36, 5, 36, 6,
+              [("Interface *: Bits sent", GREEN)]),
+        graph("CPU par serveur (%)", 0, 11, 36, 5, [("CPU utilization", ORANGE)]),
+        graph("Mémoire par serveur (%)", 36, 11, 36, 5, [("Memory utilization", "9C27B0")]),
+        graph("Charge système (1 min)", 0, 16, 36, 5, [("Load average (1m avg)", RED)]),
+        graph("Erreurs et paquets rejetés sur les interfaces", 36, 16, 36, 5,
+              [("Interface *: Inbound packets with errors", RED), ("Interface *: Outbound packets with errors", ORANGE),
+               ("Interface *: Inbound packets discarded", YELLOW), ("Interface *: Outbound packets discarded", "9E9E9E")]),
+    ]
     return [
         {"name": "Vue d'ensemble", "widgets": overview},
         {"name": "Chaîne de logs", "widgets": chain},
@@ -182,6 +206,7 @@ def build_pages(gid):
         {"name": "Logstash", "widgets": logstash},
         {"name": "Kafka", "widgets": kafka},
         {"name": "Kibana", "widgets": kibana},
+        {"name": "Système", "widgets": system},
     ]
 
 
@@ -201,6 +226,10 @@ def main():
     groups = api.call("hostgroup.get", {"filter": {"name": args.group}, "output": ["groupid"]})
     if not groups:
         sys.exit("Host group not found: %s" % args.group)
+    hosts = api.call("host.get", {"groupids": groups[0]["groupid"], "output": ["host"]})
+    if not hosts:
+        sys.exit("No host in group: %s" % args.group)
+    HOSTS.extend(sorted(h["host"] for h in hosts))
     pages = build_pages(groups[0]["groupid"])
 
     existing = api.call("dashboard.get", {"filter": {"name": args.name}, "output": ["dashboardid"]})
