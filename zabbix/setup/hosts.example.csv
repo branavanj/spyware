@@ -1,0 +1,4 @@
+name;ip;role
+# name = Hostname de zabbix_agent2.conf sur le serveur ; role = freeipa ou logstash
+ipa01;10.0.0.11;freeipa
+logstash01;10.0.0.21;logstash

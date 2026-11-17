@@ -173,3 +173,33 @@ Requiert Grafana 11.6 ou plus récent avec le plugin Zabbix 6.x.
 
 Testé sur Grafana 12.2.0 avec le plugin Zabbix 6.10.3 contre Zabbix 8.0.0 : la vue globale s'affiche avec des données réelles.
 Les sections de détail repliées n'ont pas été ouvertes pendant le test.
+
+## `setup/` — mise en place automatique pour FreeIPA et Logstash
+
+Deux scripts, à utiliser dans cet ordre.
+
+**1. Sur chaque serveur à superviser** (en root) :
+
+```bash
+./setup_agent.sh --role freeipa  --server <IP du serveur ou proxy Zabbix> --hostname <nom dans Zabbix>
+./setup_agent.sh --role logstash --server <IP du serveur ou proxy Zabbix> --hostname <nom dans Zabbix>
+```
+
+- Tous les rôles : règle `Server`, `ServerActive` et `Hostname` dans `zabbix_agent2.conf` (copie de sauvegarde `.orig`),
+  ouvre le TCP 10050 pour le serveur Zabbix dans firewalld, redémarre l'agent. Installe `zabbix-agent2` s'il manque.
+- `freeipa` : crée `/var/lib/zabbix/ipa` et la tâche cron qui écrit le rapport `ipa-healthcheck` en JSON toutes les 15 minutes,
+  lisible par l'utilisateur `zabbix` (chemin attendu par le modèle « FreeIPA by Zabbix agent 2 active »).
+- `logstash` : vérifie que l'API de monitoring répond sur `127.0.0.1:9600` (rien à installer).
+
+Le script peut être relancé sans risque. Le flux des contrôles actifs (serveur supervisé vers Zabbix, TCP 10051)
+reste à ouvrir côté pare-feu réseau.
+
+**2. Depuis un poste qui joint l'API Zabbix** :
+
+```bash
+ZABBIX_API_TOKEN=<jeton API> python3 create_hosts.py --url https://<zabbix> --group "<groupe d'hôtes>" hosts.csv
+```
+
+`hosts.csv` liste `name;ip;role` (voir `hosts.example.csv`). Le script crée les hôtes manquants et, pour les hôtes
+existants, ajoute seulement le modèle du rôle et le groupe, sans rien retirer. `--dry-run` affiche sans modifier,
+`--proxy "<nom>"` rattache les nouveaux hôtes à un proxy. Les modèles par rôle se règlent en tête du script (`ROLE_TEMPLATES`).
