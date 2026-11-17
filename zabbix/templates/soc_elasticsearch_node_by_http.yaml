@@ -24,7 +24,7 @@ zabbix_export:
       Le certificat du nœud n'est pas vérifié (connexion par adresse IP).
     vendor:
       name: SOC
-      version: 8.0-4
+      version: 8.0-5
     groups:
     - name: Templates/SOC
     items:
@@ -38,7 +38,7 @@ zabbix_export:
       username: '{$ELASTICSEARCH.USERNAME}'
       password: '{$ELASTICSEARCH.PASSWORD}'
       description: Root API endpoint of this node. On any error the value is replaced with {} so that the node status drops to 0.
-      preprocessing: &id001
+      preprocessing:
       - type: CHECK_NOT_SUPPORTED
         parameters:
         - '-1'
@@ -135,7 +135,12 @@ zabbix_export:
       username: '{$ELASTICSEARCH.USERNAME}'
       password: '{$ELASTICSEARCH.PASSWORD}'
       description: 'A node without a master answers 503: the value is then replaced with {}.'
-      preprocessing: *id001
+      preprocessing:
+      - type: CHECK_NOT_SUPPORTED
+        parameters:
+        - '-1'
+        error_handler: CUSTOM_VALUE
+        error_handler_params: '{}'
       timeout: 15s
       url: '{$ELASTICSEARCH.SCHEME}://{HOST.CONN}:{$ELASTICSEARCH.PORT}/_cluster/health?master_timeout=5s&filter_path=status,number_of_nodes'
       tags:
@@ -218,9 +223,9 @@ zabbix_export:
       authtype: BASIC
       username: '{$ELASTICSEARCH.USERNAME}'
       password: '{$ELASTICSEARCH.PASSWORD}'
-      description: Statistics of this node only (_local), limited to what the official template does not collect.
+      description: Roles and circuit breakers of this node only (_local).
       timeout: 15s
-      url: '{$ELASTICSEARCH.SCHEME}://{HOST.CONN}:{$ELASTICSEARCH.PORT}/_nodes/_local/stats?filter_path=nodes.*.roles,nodes.*.breakers.*.tripped'
+      url: '{$ELASTICSEARCH.SCHEME}://{HOST.CONN}:{$ELASTICSEARCH.PORT}/_nodes/_local/stats/breaker'
       tags:
       - tag: component
         value: raw
